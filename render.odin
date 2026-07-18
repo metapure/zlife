@@ -1,0 +1,407 @@
+package main
+
+import NS "core:sys/darwin/Foundation"
+import MTL "vendor:darwin/Metal"
+import CA "vendor:darwin/QuartzCore"
+
+import "core:fmt"
+import "core:mem"
+
+Instance :: struct {
+	center: [3]f32,
+	age: f32,
+	scale: f32,
+	glow: f32,
+	padding: [2]f32,
+}
+
+Uniforms :: struct {
+	view_proj: matrix[4, 4]f32,
+	params: [4]f32,
+}
+
+Vertex :: struct {
+	position: [3]f32,
+	normal:   [3]f32,
+}
+
+Line_Vertex :: struct {
+	position: [4]f32,
+	color: [4]f32,
+}
+
+Renderer :: struct {
+	device:         ^MTL.Device,
+	swapchain:      ^CA.MetalLayer,
+	queue:          ^MTL.CommandQueue,
+	pso:            ^MTL.RenderPipelineState,
+	line_pso:       ^MTL.RenderPipelineState,
+	ui_pso:         ^MTL.RenderPipelineState,
+	depth_state:    ^MTL.DepthStencilState,
+	overlay_depth_state: ^MTL.DepthStencilState,
+	depth_texture:  ^MTL.Texture,
+	vertex_buffer:  ^MTL.Buffer,
+	instance_buffer:^MTL.Buffer,
+	uniform_buffer: ^MTL.Buffer,
+	grid_buffer:    ^MTL.Buffer,
+	ui_buffer:      ^MTL.Buffer,
+	depth_w:        int,
+	depth_h:        int,
+	max_instances:  int,
+	grid_vertex_count: int,
+	instance_count: int,
+}
+
+CUBE_VERTICES := [?]Vertex {
+	// +Y
+	{{ -0.5,  0.5, -0.5 }, { 0, 1, 0 }}, {{  0.5,  0.5, -0.5 }, { 0, 1, 0 }}, {{  0.5,  0.5,  0.5 }, { 0, 1, 0 }},
+	{{ -0.5,  0.5, -0.5 }, { 0, 1, 0 }}, {{  0.5,  0.5,  0.5 }, { 0, 1, 0 }}, {{ -0.5,  0.5,  0.5 }, { 0, 1, 0 }},
+	// -Y
+	{{ -0.5, -0.5,  0.5 }, { 0,-1, 0 }}, {{  0.5, -0.5,  0.5 }, { 0,-1, 0 }}, {{  0.5, -0.5, -0.5 }, { 0,-1, 0 }},
+	{{ -0.5, -0.5,  0.5 }, { 0,-1, 0 }}, {{  0.5, -0.5, -0.5 }, { 0,-1, 0 }}, {{ -0.5, -0.5, -0.5 }, { 0,-1, 0 }},
+	// +Z
+	{{ -0.5, -0.5,  0.5 }, { 0, 0, 1 }}, {{ -0.5,  0.5,  0.5 }, { 0, 0, 1 }}, {{  0.5,  0.5,  0.5 }, { 0, 0, 1 }},
+	{{ -0.5, -0.5,  0.5 }, { 0, 0, 1 }}, {{  0.5,  0.5,  0.5 }, { 0, 0, 1 }}, {{  0.5, -0.5,  0.5 }, { 0, 0, 1 }},
+	// -Z
+	{{  0.5, -0.5, -0.5 }, { 0, 0,-1 }}, {{  0.5,  0.5, -0.5 }, { 0, 0,-1 }}, {{ -0.5,  0.5, -0.5 }, { 0, 0,-1 }},
+	{{  0.5, -0.5, -0.5 }, { 0, 0,-1 }}, {{ -0.5,  0.5, -0.5 }, { 0, 0,-1 }}, {{ -0.5, -0.5, -0.5 }, { 0, 0,-1 }},
+	// +X
+	{{  0.5, -0.5,  0.5 }, { 1, 0, 0 }}, {{  0.5,  0.5,  0.5 }, { 1, 0, 0 }}, {{  0.5,  0.5, -0.5 }, { 1, 0, 0 }},
+	{{  0.5, -0.5,  0.5 }, { 1, 0, 0 }}, {{  0.5,  0.5, -0.5 }, { 1, 0, 0 }}, {{  0.5, -0.5, -0.5 }, { 1, 0, 0 }},
+	// -X
+	{{ -0.5, -0.5, -0.5 }, {-1, 0, 0 }}, {{ -0.5,  0.5, -0.5 }, {-1, 0, 0 }}, {{ -0.5,  0.5,  0.5 }, {-1, 0, 0 }},
+	{{ -0.5, -0.5, -0.5 }, {-1, 0, 0 }}, {{ -0.5,  0.5,  0.5 }, {-1, 0, 0 }}, {{ -0.5, -0.5,  0.5 }, {-1, 0, 0 }},
+}
+
+SHADER_SRC :: string(#load("shaders.metal"))
+
+@(private)
+line_push :: proc(
+	vertices: []Line_Vertex,
+	count: ^int,
+	a, b: [3]f32,
+	color: [4]f32,
+) {
+	if count^ + 2 > len(vertices) {
+		return
+	}
+	vertices[count^] = {position = {a.x, a.y, a.z, 1}, color = color}
+	count^ += 1
+	vertices[count^] = {position = {b.x, b.y, b.z, 1}, color = color}
+	count^ += 1
+}
+
+@(private)
+renderer_create_grid :: proc(r: ^Renderer) {
+	vertices: [512]Line_Vertex
+	count := 0
+	half := f32(GRID) * 0.5
+	z0 := f32(-0.52)
+
+	for i in 0 ..= GRID {
+		p := f32(i) - half
+		alpha: f32 = 0.07
+		if i % 8 == 0 || i == GRID / 2 {
+			alpha = 0.22
+		}
+		color := [4]f32{0.15, 0.72, 0.92, alpha}
+		line_push(vertices[:], &count, {-half, p, z0}, {half, p, z0}, color)
+		line_push(vertices[:], &count, {p, -half, z0}, {p, half, z0}, color)
+	}
+
+	bounds_color := [4]f32{0.28, 0.46, 0.92, 0.34}
+	z1 := f32(DEPTH) - 0.5
+	corners := [?][3]f32{
+		{-half, -half, z0}, {half, -half, z0}, {half, half, z0}, {-half, half, z0},
+		{-half, -half, z1}, {half, -half, z1}, {half, half, z1}, {-half, half, z1},
+	}
+	edges := [?][2]int{
+		{0, 1}, {1, 2}, {2, 3}, {3, 0},
+		{4, 5}, {5, 6}, {6, 7}, {7, 4},
+		{0, 4}, {1, 5}, {2, 6}, {3, 7},
+	}
+	for edge in edges {
+		line_push(vertices[:], &count, corners[edge.x], corners[edge.y], bounds_color)
+	}
+	r.grid_buffer = r.device->newBufferWithSlice(vertices[:count], {})
+	r.grid_vertex_count = count
+}
+
+renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
+	r.device = MTL.CreateSystemDefaultDevice()
+	if r.device == nil {
+		fmt.eprintln("No Metal device")
+		return {}, false
+	}
+	fmt.println("Metal:", r.device->name()->odinString())
+
+	r.swapchain = CA.MetalLayer.layer()
+	r.swapchain->setDevice(r.device)
+	r.swapchain->setPixelFormat(.BGRA8Unorm_sRGB)
+	r.swapchain->setFramebufferOnly(true)
+	r.swapchain->setDisplaySyncEnabled(true)
+	r.swapchain->setFrame(native_window->frame())
+
+	view := native_window->contentView()
+	view->setWantsLayer(true)
+	view->setLayer(r.swapchain)
+	native_window->setOpaque(true)
+	native_window->setBackgroundColor(nil)
+
+	r.queue = r.device->newCommandQueue()
+
+	compile_options := NS.new(MTL.CompileOptions)
+	defer compile_options->release()
+
+	shader_src := NS.String.alloc()->initWithOdinString(SHADER_SRC)
+	defer shader_src->release()
+	library, library_error := r.device->newLibraryWithSource(shader_src, compile_options)
+	if library_error != nil {
+		fmt.eprintln(library_error->localizedDescription()->odinString())
+		renderer_destroy(&r)
+		return {}, false
+	}
+	defer library->release()
+
+	vert_fn := library->newFunctionWithName(NS.AT("vertex_main"))
+	frag_fn := library->newFunctionWithName(NS.AT("fragment_main"))
+	line_vert_fn := library->newFunctionWithName(NS.AT("line_vertex"))
+	line_frag_fn := library->newFunctionWithName(NS.AT("line_fragment"))
+	ui_vert_fn := library->newFunctionWithName(NS.AT("ui_vertex"))
+	ui_frag_fn := library->newFunctionWithName(NS.AT("ui_fragment"))
+	if vert_fn == nil || frag_fn == nil ||
+	   line_vert_fn == nil || line_frag_fn == nil ||
+	   ui_vert_fn == nil || ui_frag_fn == nil {
+		fmt.eprintln("Metal shader entry point missing")
+		renderer_destroy(&r)
+		return {}, false
+	}
+	defer vert_fn->release()
+	defer frag_fn->release()
+	defer line_vert_fn->release()
+	defer line_frag_fn->release()
+	defer ui_vert_fn->release()
+	defer ui_frag_fn->release()
+
+	pso_desc := NS.new(MTL.RenderPipelineDescriptor)
+	defer pso_desc->release()
+	pso_desc->colorAttachments()->object(0)->setPixelFormat(.BGRA8Unorm_sRGB)
+	pso_desc->setDepthAttachmentPixelFormat(.Depth32Float)
+	pso_desc->setVertexFunction(vert_fn)
+	pso_desc->setFragmentFunction(frag_fn)
+
+	pipeline_error: ^NS.Error
+	r.pso, pipeline_error = r.device->newRenderPipelineState(pso_desc)
+	if pipeline_error != nil {
+		fmt.eprintln(pipeline_error->localizedDescription()->odinString())
+		renderer_destroy(&r)
+		return {}, false
+	}
+
+	line_desc := NS.new(MTL.RenderPipelineDescriptor)
+	defer line_desc->release()
+	line_attachment := line_desc->colorAttachments()->object(0)
+	line_attachment->setPixelFormat(.BGRA8Unorm_sRGB)
+	line_attachment->setBlendingEnabled(true)
+	line_attachment->setSourceRGBBlendFactor(.SourceAlpha)
+	line_attachment->setDestinationRGBBlendFactor(.OneMinusSourceAlpha)
+	line_attachment->setSourceAlphaBlendFactor(.One)
+	line_attachment->setDestinationAlphaBlendFactor(.OneMinusSourceAlpha)
+	line_desc->setDepthAttachmentPixelFormat(.Depth32Float)
+	line_desc->setVertexFunction(line_vert_fn)
+	line_desc->setFragmentFunction(line_frag_fn)
+	r.line_pso, pipeline_error = r.device->newRenderPipelineState(line_desc)
+	if pipeline_error != nil {
+		fmt.eprintln(pipeline_error->localizedDescription()->odinString())
+		renderer_destroy(&r)
+		return {}, false
+	}
+
+	ui_desc := NS.new(MTL.RenderPipelineDescriptor)
+	defer ui_desc->release()
+	ui_attachment := ui_desc->colorAttachments()->object(0)
+	ui_attachment->setPixelFormat(.BGRA8Unorm_sRGB)
+	ui_attachment->setBlendingEnabled(true)
+	ui_attachment->setSourceRGBBlendFactor(.SourceAlpha)
+	ui_attachment->setDestinationRGBBlendFactor(.OneMinusSourceAlpha)
+	ui_attachment->setSourceAlphaBlendFactor(.One)
+	ui_attachment->setDestinationAlphaBlendFactor(.OneMinusSourceAlpha)
+	ui_desc->setDepthAttachmentPixelFormat(.Depth32Float)
+	ui_desc->setVertexFunction(ui_vert_fn)
+	ui_desc->setFragmentFunction(ui_frag_fn)
+	r.ui_pso, pipeline_error = r.device->newRenderPipelineState(ui_desc)
+	if pipeline_error != nil {
+		fmt.eprintln(pipeline_error->localizedDescription()->odinString())
+		renderer_destroy(&r)
+		return {}, false
+	}
+
+	ds_desc := MTL.DepthStencilDescriptor.alloc()->init()
+	defer ds_desc->release()
+	ds_desc->setDepthCompareFunction(.Less)
+	ds_desc->setDepthWriteEnabled(true)
+	r.depth_state = r.device->newDepthStencilState(ds_desc)
+
+	overlay_ds_desc := MTL.DepthStencilDescriptor.alloc()->init()
+	defer overlay_ds_desc->release()
+	overlay_ds_desc->setDepthCompareFunction(.Always)
+	overlay_ds_desc->setDepthWriteEnabled(false)
+	r.overlay_depth_state = r.device->newDepthStencilState(overlay_ds_desc)
+
+	r.vertex_buffer = r.device->newBufferWithSlice(CUBE_VERTICES[:], {})
+	r.max_instances = GRID * GRID * DEPTH + 64
+	r.instance_buffer = r.device->newBufferWithLength(NS.UInteger(r.max_instances * size_of(Instance)), {})
+	r.uniform_buffer = r.device->newBufferWithLength(NS.UInteger(size_of(Uniforms)), {})
+	r.ui_buffer = r.device->newBufferWithLength(NS.UInteger(UI_MAX_VERTICES * size_of(UI_Vertex)), {})
+	renderer_create_grid(&r)
+
+	if r.queue == nil || r.pso == nil || r.depth_state == nil ||
+	   r.vertex_buffer == nil || r.instance_buffer == nil ||
+	   r.uniform_buffer == nil || r.grid_buffer == nil || r.ui_buffer == nil {
+		fmt.eprintln("Metal resource allocation failed")
+		renderer_destroy(&r)
+		return {}, false
+	}
+	return r, true
+}
+
+renderer_resize_depth :: proc(r: ^Renderer, width, height: int) {
+	if width <= 0 || height <= 0 {
+		return
+	}
+	if r.depth_texture != nil && r.depth_w == width && r.depth_h == height {
+		return
+	}
+	if r.depth_texture != nil {
+		r.depth_texture->release()
+		r.depth_texture = nil
+	}
+
+	desc := MTL.TextureDescriptor.texture2DDescriptorWithPixelFormat(
+		.Depth32Float,
+		NS.UInteger(width),
+		NS.UInteger(height),
+		false,
+	)
+	desc->setStorageMode(.Private)
+	desc->setUsage({.RenderTarget})
+	r.depth_texture = r.device->newTextureWithDescriptor(desc)
+	r.depth_w = width
+	r.depth_h = height
+}
+
+renderer_set_drawable_size :: proc(r: ^Renderer, width, height: f64) {
+	if r.swapchain == nil {
+		return
+	}
+	r.swapchain->setDrawableSize(NS.Size{width = NS.Float(width), height = NS.Float(height)})
+	renderer_resize_depth(r, int(width + 0.5), int(height + 0.5))
+}
+
+renderer_draw :: proc(
+	r: ^Renderer,
+	instances: []Instance,
+	view_proj: matrix[4, 4]f32,
+	elapsed: f32,
+	selected_age: int,
+	show_grid: bool,
+	previews: []Instance,
+	ui_vertices: []UI_Vertex,
+	upload_instances: bool,
+) {
+	NS.scoped_autoreleasepool()
+
+	drawable := r.swapchain->nextDrawable()
+	if drawable == nil || r.depth_texture == nil {
+		return
+	}
+
+	inst_count := r.instance_count
+	if upload_instances {
+		preview_count := min(len(previews), r.max_instances)
+		inst_count = min(len(instances), r.max_instances - preview_count)
+		dst := r.instance_buffer->contentsAsSlice([]Instance)
+		if inst_count > 0 {
+			mem.copy(&dst[0], &instances[0], inst_count * size_of(Instance))
+		}
+		if preview_count > 0 {
+			mem.copy(&dst[inst_count], &previews[0], preview_count * size_of(Instance))
+			inst_count += preview_count
+		}
+		r.instance_count = inst_count
+	}
+
+	uniforms := r.uniform_buffer->contentsAsSlice([]Uniforms)
+	uniforms[0].view_proj = view_proj
+	uniforms[0].params = {elapsed, f32(selected_age), f32(DEPTH), 0}
+
+	ui_count := min(len(ui_vertices), UI_MAX_VERTICES)
+	if ui_count > 0 {
+		ui_dst := r.ui_buffer->contentsAsSlice([]UI_Vertex)
+		mem.copy(&ui_dst[0], &ui_vertices[0], ui_count * size_of(UI_Vertex))
+	}
+
+	pass := MTL.RenderPassDescriptor.renderPassDescriptor()
+	color := pass->colorAttachments()->object(0)
+	color->setClearColor(MTL.ClearColor{0.04, 0.05, 0.08, 1.0})
+	color->setLoadAction(.Clear)
+	color->setStoreAction(.Store)
+	color->setTexture(drawable->texture())
+
+	depth := pass->depthAttachment()
+	depth->setTexture(r.depth_texture)
+	depth->setClearDepth(1.0)
+	depth->setLoadAction(.Clear)
+	depth->setStoreAction(.DontCare)
+
+	cmd := r.queue->commandBuffer()
+	enc := cmd->renderCommandEncoderWithDescriptor(pass)
+
+	if show_grid {
+		enc->setRenderPipelineState(r.line_pso)
+		enc->setDepthStencilState(r.depth_state)
+		enc->setVertexBuffer(r.grid_buffer, 0, 0)
+		enc->setVertexBuffer(r.uniform_buffer, 0, 1)
+		enc->drawPrimitives(.Line, 0, NS.UInteger(r.grid_vertex_count))
+	}
+
+	enc->setRenderPipelineState(r.pso)
+	enc->setDepthStencilState(r.depth_state)
+	enc->setFrontFacingWinding(.CounterClockwise)
+	enc->setCullMode(.Back)
+	enc->setVertexBuffer(r.vertex_buffer, 0, 0)
+	enc->setVertexBuffer(r.instance_buffer, 0, 1)
+	enc->setVertexBuffer(r.uniform_buffer, 0, 2)
+
+	if inst_count > 0 {
+		enc->drawPrimitivesWithInstanceCount(.Triangle, 0, NS.UInteger(len(CUBE_VERTICES)), NS.UInteger(inst_count))
+	}
+
+	if ui_count > 0 {
+		enc->setRenderPipelineState(r.ui_pso)
+		enc->setDepthStencilState(r.overlay_depth_state)
+		enc->setVertexBuffer(r.ui_buffer, 0, 0)
+		enc->drawPrimitives(.Triangle, 0, NS.UInteger(ui_count))
+	}
+
+	enc->endEncoding()
+	cmd->presentDrawable(drawable)
+	cmd->commit()
+}
+
+renderer_destroy :: proc(r: ^Renderer) {
+	if r.depth_texture != nil do r.depth_texture->release()
+	if r.ui_buffer != nil do r.ui_buffer->release()
+	if r.grid_buffer != nil do r.grid_buffer->release()
+	if r.uniform_buffer != nil do r.uniform_buffer->release()
+	if r.instance_buffer != nil do r.instance_buffer->release()
+	if r.vertex_buffer != nil do r.vertex_buffer->release()
+	if r.overlay_depth_state != nil do r.overlay_depth_state->release()
+	if r.depth_state != nil do r.depth_state->release()
+	if r.ui_pso != nil do r.ui_pso->release()
+	if r.line_pso != nil do r.line_pso->release()
+	if r.pso != nil do r.pso->release()
+	if r.queue != nil do r.queue->release()
+	if r.device != nil do r.device->release()
+	r^ = {}
+}
