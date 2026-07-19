@@ -117,15 +117,16 @@ vertex V2F vertex_main(
 	return out;
 }
 
-// HDR emission ramp down the timeline: searing red-orange at the present,
-// through magenta and crimson, into ember red, dissolving to black. The
-// wall is monochromatic red; heat is expressed by intensity, not whiteness.
+// HDR emission ramp down the timeline: neon cyberpunk red at the present,
+// through scarlet and crimson, into ember red, dissolving to black. The
+// wall is strictly red/black (blue channel near zero so nothing drifts
+// toward purple); heat is expressed by intensity, not hue.
 static float3 blackwall_ramp(float age) {
-	float3 core    = float3(3.40, 0.45, 0.30);
-	float3 magenta = float3(1.90, 0.12, 1.05);
-	float3 crimson = float3(1.05, 0.03, 0.22);
-	float3 ember   = float3(0.30, 0.008, 0.05);
-	float3 c = mix(core, magenta, smoothstep(0.0, 0.05, age));
+	float3 core    = float3(2.30, 0.07, 0.045);
+	float3 scarlet = float3(1.30, 0.045, 0.028);
+	float3 crimson = float3(0.65, 0.018, 0.014);
+	float3 ember   = float3(0.14, 0.004, 0.004);
+	float3 c = mix(core, scarlet, smoothstep(0.0, 0.05, age));
 	c = mix(c, crimson, smoothstep(0.05, 0.30, age));
 	c = mix(c, ember, smoothstep(0.30, 0.78, age));
 	c = mix(c, float3(0.0), smoothstep(0.78, 1.0, age));
@@ -146,19 +147,19 @@ fragment float4 fragment_main(
 	// occlusion, and a fixed key direction still modulate the emission so
 	// the tower reads as a 3D structure instead of a flat glow.
 	float3 key_dir = normalize(float3(0.8025, 0.3883, 0.4530));
-	float face = 0.70 + 0.30 * saturate(dot(n, key_dir));
-	float shade = (0.30 + 0.70 * in.sun) * (1.0 - in.occlusion * 0.65) * face;
+	float face = 0.65 + 0.35 * saturate(dot(n, key_dir));
+	float shade = (0.22 + 0.65 * in.sun) * (1.0 - in.occlusion * 0.70) * face;
 	emission *= shade;
 
 	// Every cell carries a subtle data-flicker.
-	float flick = 0.82 + 0.18 * sin(time * 9.0 + in.hash * 50.265);
+	float flick = 0.80 + 0.16 * sin(time * 9.0 + in.hash * 50.265);
 	emission *= flick;
 
 	// Layered breathing: a slow global inhale/exhale, a brightness wave
 	// rolling down the tower with the timeline, and a roaming hotspot
 	// that wanders the wall like a pressure point behind the firewall.
-	float breath = 0.85 + 0.33 * breath01(time);
-	float wave = 1.0 + 0.10 * sin(in.world_pos.y * 0.08 + time * 0.9);
+	float breath = 0.70 + 0.22 * breath01(time);
+	float wave = 1.0 + 0.08 * sin(in.world_pos.y * 0.08 + time * 0.9);
 	float3 hotspot = float3(
 		36.0 * sin(time * 0.13),
 		-42.0 + 34.0 * sin(time * 0.071),
@@ -166,17 +167,17 @@ fragment float4 fragment_main(
 	);
 	float3 hd = in.world_pos - hotspot;
 	float hot = exp(-dot(hd, hd) / (20.0 * 20.0));
-	emission *= breath * wave * (1.0 + 1.0 * hot);
+	emission *= breath * wave * (1.0 + 0.65 * hot);
 
 	// Cyan data-shafts: full-height cold columns with a soft brightness
 	// scroll running down them, fading out near the dissolve.
 	float tail = 1.0 - smoothstep(0.80, 1.0, age);
-	float3 shaft_color = float3(0.55, 2.10, 2.80);
-	float scroll = 0.70 + 0.30 * sin(in.world_pos.y * 0.5 - time * 4.0 + in.hash * 6.0);
+	float3 shaft_color = float3(0.10, 2.00, 2.15);
+	float scroll = 0.65 + 0.35 * sin(in.world_pos.y * 0.5 - time * 4.0 + in.hash * 6.0);
 	emission = mix(emission, shaft_color * shade * scroll, in.shaft * tail);
 
 	// Sparse residual sparkles as secondary texture.
-	float3 cyan = float3(0.30, 1.30, 1.90);
+	float3 cyan = float3(0.08, 1.45, 1.55);
 	float sparkle = 0.5 * in.spark * tail;
 	emission = mix(
 		emission,
@@ -186,16 +187,16 @@ fragment float4 fragment_main(
 
 	if (age < 0.001) {
 		// Present layer breathes and burns hottest.
-		emission *= in.pulse * 1.25;
+		emission *= in.pulse * 1.08;
 	} else if (in.glow > 0.0 && in.glow < 1.5) {
 		// Selected historical slice: a cyan scan band.
-		emission = mix(emission, float3(0.30, 1.50, 2.20) * shade, 0.55 * in.glow);
-		emission = max(emission, float3(0.02));
+		emission = mix(emission, float3(0.10, 1.60, 1.70) * shade, 0.55 * in.glow);
+		emission = max(emission, float3(0.015));
 	}
 
 	if (in.glow > 1.5) {
 		// Hover / pattern preview cursor: bright cyan emissive.
-		emission = float3(0.50, 2.40, 3.20);
+		emission = float3(0.15, 2.30, 2.45);
 	}
 
 	return float4(emission, 1.0);
@@ -357,12 +358,12 @@ fragment float4 composite_fragment(
 	float k = 0.2;
 	color = max(color * (1.0 + 4.0 * k) - neighbors * k, 0.0);
 
-	color += bloom.sample(post_sampler, uv).rgb * 0.55;
+	color += bloom.sample(post_sampler, uv).rgb * 0.38;
 
 	// Scanlines and vignette; the pure-black background hides the
 	// vignette's edge, so it can sink a little deeper.
-	float scan = 0.93 + 0.07 * sin(in.position.y * 1.7);
-	float vig = 1.0 - 0.45 * smoothstep(0.35, 0.95, length(in.uv - 0.5) * 1.35);
+	float scan = 0.90 + 0.06 * sin(in.position.y * 1.7);
+	float vig = 1.0 - 0.55 * smoothstep(0.30, 0.95, length(in.uv - 0.5) * 1.40);
 	color *= scan * vig;
 
 	// Animated grain also dithers the long smooth gradients.

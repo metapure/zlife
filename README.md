@@ -62,6 +62,23 @@ Run the tests with:
 odin test .
 ```
 
+## Live wallpaper mode
+
+```bash
+./zlife --wallpaper   # or -w
+./zlife --wallpaper --fps 30
+```
+
+Pins the sculpture to the desktop as a live wallpaper: a fullscreen
+borderless window at the desktop window level, behind the icons, on every
+Space, click-through, and hidden from the Dock and Cmd+Tab. The simulation
+starts running immediately with the HUD hidden, and the ambient camera
+drift takes over since no input reaches the window.
+
+The wallpaper lives only as long as the process: run it from a terminal and
+stop it with **Ctrl+C** (or `kill`) there — keyboard shortcuts do not work in
+this mode because the window never receives input.
+
 ## Controls
 
 ### Camera and editing

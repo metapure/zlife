@@ -17,10 +17,10 @@ camera_default :: proc() -> Camera {
 	// the sculpture, negative pitch looking up, dissolving tips overhead.
 	// Hand-tuned framing (V key snapshot), for the 96 x 96 x 256 tower.
 	return Camera {
-		yaw      = -0.977,
-		pitch    = -0.740,
-		distance = 159.4,
-		target   = {-7.66, -49.19, 8.74},
+		yaw      = 0.917,
+		pitch    = -0.605,
+		distance = 486.0,
+		target   = {-4.42, -39.14, -4.51},
 		aspect   = 16.0 / 9.0,
 	}
 }

@@ -116,7 +116,7 @@ renderer_create_grid :: proc(r: ^Renderer) {
 		if i % 8 == 0 || i == GRID / 2 {
 			alpha = 0.10
 		}
-		color := [4]f32{0.85, 0.16, 0.20, alpha}
+		color := [4]f32{0.70, 0.05, 0.04, alpha}
 		line_push(vertices[:], &count, {-half, y0, p}, {half, y0, p}, color)
 		line_push(vertices[:], &count, {p, y0, -half}, {p, y0, half}, color)
 	}

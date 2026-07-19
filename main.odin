@@ -3,6 +3,7 @@ package main
 import NS "core:sys/darwin/Foundation"
 import SDL "vendor:sdl2"
 
+import "core:c/libc"
 import "core:fmt"
 import "core:math"
 import "core:os"
@@ -36,6 +37,7 @@ App :: struct {
 	ui_count: int,
 
 	running: bool,
+	wallpaper: bool,
 	paused: bool,
 	minimized: bool,
 	painting: bool,
@@ -115,9 +117,9 @@ build_hud :: proc(app: ^App) {
 		return
 	}
 
-	primary := [4]f32{0.95, 0.42, 0.38, 0.90}
-	accent := [4]f32{1.0, 0.85, 0.25, 0.96}
-	muted := [4]f32{0.48, 0.14, 0.13, 0.80}
+	primary := [4]f32{0.95, 0.14, 0.10, 0.90}
+	accent := [4]f32{0.15, 0.95, 1.0, 0.96}
+	muted := [4]f32{0.42, 0.08, 0.06, 0.80}
 	status := "PAUSED" if app.paused else "RUNNING"
 
 	if app.hud_mode == .Minimal {
@@ -282,6 +284,16 @@ handle_key :: proc(app: ^App, key: SDL.Keycode, mods: SDL.Keymod) {
 	}
 }
 
+// Set from the signal handler so Ctrl+C / kill from the console always shuts
+// down cleanly, even when the shell started us with SIGINT ignored (which
+// stops SDL from installing its own quit handler).
+@(private = "file")
+quit_requested: b32
+
+handle_quit_signal :: proc "c" (_: libc.int) {
+	quit_requested = true
+}
+
 run :: proc() {
 	SDL.SetHint(SDL.HINT_RENDER_DRIVER, "metal")
 	SDL.setenv("METAL_DEVICE_WRAPPER_TYPE", "1", 0)
@@ -293,13 +305,31 @@ run :: proc() {
 
 	app := new(App)
 	defer free(app)
+	for arg in os.args[1:] {
+		if arg == "--wallpaper" || arg == "-w" {
+			app.wallpaper = true
+		}
+	}
+
+	win_x, win_y: i32 = SDL.WINDOWPOS_CENTERED, SDL.WINDOWPOS_CENTERED
+	win_w, win_h: i32 = 1280, 800
+	win_flags: SDL.WindowFlags = {.ALLOW_HIGHDPI, .HIDDEN, .RESIZABLE}
+	if app.wallpaper {
+		bounds: SDL.Rect
+		if SDL.GetDisplayBounds(0, &bounds) != 0 {
+			fmt.eprintln("SDL_GetDisplayBounds:", SDL.GetError())
+			os.exit(1)
+		}
+		win_x, win_y, win_w, win_h = bounds.x, bounds.y, bounds.w, bounds.h
+		win_flags = {.ALLOW_HIGHDPI, .HIDDEN, .BORDERLESS}
+	}
 	app.window = SDL.CreateWindow(
 		"zlife // living time sculpture",
-		SDL.WINDOWPOS_CENTERED,
-		SDL.WINDOWPOS_CENTERED,
-		1280,
-		800,
-		{.ALLOW_HIGHDPI, .HIDDEN, .RESIZABLE},
+		win_x,
+		win_y,
+		win_w,
+		win_h,
+		win_flags,
 	)
 	if app.window == nil {
 		fmt.eprintln("SDL_CreateWindow:", SDL.GetError())
@@ -314,6 +344,9 @@ run :: proc() {
 		os.exit(1)
 	}
 	app.native_window = (^NS.Window)(wm.info.cocoa.window)
+	if app.wallpaper {
+		wallpaper_configure_window(app.native_window)
+	}
 
 	renderer, renderer_ok := renderer_init(app.native_window)
 	if !renderer_ok {
@@ -324,10 +357,10 @@ run :: proc() {
 	defer renderer_destroy(&app.renderer)
 
 	app.camera = camera_default()
-	app.paused = true
+	app.paused = false if app.wallpaper else true
 	app.running = true
-	app.show_grid = true
-	app.hud_mode = .Minimal
+	app.show_grid = false if app.wallpaper else true
+	app.hud_mode = .Hidden if app.wallpaper else .Minimal
 	app.scene_dirty = true
 	app.tick_hz = DEFAULT_TICK_HZ
 	app.selected_pattern = .Glider_Fleet
@@ -336,10 +369,20 @@ run :: proc() {
 	update_drawable_size(app)
 	SDL.ShowWindow(app.window)
 
-	fmt.println("zlife: time flows downward from the present plane. Press U to cycle the HUD.")
+	if app.wallpaper {
+		fmt.println("zlife: running as live wallpaper. Press Ctrl+C here to stop.")
+	} else {
+		fmt.println("zlife: time flows downward from the present plane. Press U to cycle the HUD.")
+	}
+	libc.signal(libc.SIGINT, handle_quit_signal)
+	libc.signal(libc.SIGTERM, handle_quit_signal)
 	prev := time.tick_now()
 
 	for app.running {
+		if quit_requested {
+			app.running = false
+			break
+		}
 		frame_start := time.tick_now()
 		for e: SDL.Event; SDL.PollEvent(&e); {
 			#partial switch e.type {
