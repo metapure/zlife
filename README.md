@@ -4,23 +4,28 @@ A living sculpture of Conway's Game of Life, built with **Odin + Metal** for
 macOS.
 
 This is regular, toroidal B3/S23 Life on a 96×96 grid. The third axis is not
-another simulation dimension: **time flows downward**. The white-hot plane on
-top is the present; up to 255 earlier generations hang beneath it as a wall
-of emissive voxels burning from magenta through crimson into ember red and
-finally dissolving into black, with no gaps in space or time. The tower
+another simulation dimension: **time flows downward**. The searing red plane
+on top is the present; up to 255 earlier generations hang beneath it as a
+wall of emissive voxels burning from magenta through crimson into ember red
+and finally dissolving into black, with no gaps in space or time. The tower
 glides downward continuously between generations instead of stepping.
 
-The look is modeled on the Blackwall from Cyberpunk 2077: a seething
-firewall of red data laced with cyan sparks, seen through a glitchy,
-chromatically fringed lens.
+The look is modeled on the Blackwall from Cyberpunk 2077: a breathing
+firewall of red data pierced by cold cyan shafts, seen through a glitchy,
+chromatically fringed lens, floating in a pure black void.
 
 The scene includes:
 
-- a pulsing white-hot present generation atop a crimson-and-magenta history
-- a rotating subset of cells that burn cyan, plus per-voxel data flicker
+- a pulsing searing-red present generation atop a crimson-and-magenta history
+- a breathing wall: a slow global inhale/exhale (the voxels physically
+  dilate), brightness waves rolling down the timeline, and a roaming
+  hotspot wandering the structure
+- rare full-height cyan data-shaft columns that slowly migrate, with a
+  brightness scroll running down them, plus sparse cyan sparkles and
+  per-voxel data flicker
 - rare glitch streaks that briefly smear individual voxels vertically
 - an HDR post pipeline: bloom, chromatic aberration, scanlines, glitch band
-  displacement, vignette, and film grain over a near-black red haze
+  displacement, vignette, and film grain over a pure black background
 - per-voxel ambient occlusion and a ray-marched shading term that keep the
   emissive wall reading as a 3D structure
 - a slow ambient camera drift after a few seconds of inactivity
