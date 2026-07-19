@@ -13,6 +13,10 @@ DEFAULT_TICK_HZ :: 8.0
 // Generations to wait after a soup injection before injecting again, so a
 // patch that dies instantly doesn't trigger machine-gun reseeding.
 INJECT_COOLDOWN :: 16
+// Localized breaches pace slower: a mostly-settled world can hold many
+// stuck tiles at once, and one hit every ~8 s (at the default 8 Hz) keeps
+// the wall alive without turning it into a permanent firefight.
+LOCAL_INJECT_COOLDOWN :: 256
 TARGET_FRAME_TIME :: time.Second / 60
 IDLE_DRIFT_DELAY :: 5.0
 IDLE_DRIFT_EASE_IN :: 6.0
@@ -501,6 +505,8 @@ run :: proc() {
 				if app.inject_cooldown > 0 {
 					app.inject_cooldown -= 1
 				} else if app.life.cycle_period != 0 {
+					// Global stagnation: the whole world repeats, so the
+					// wall is breached at 2-3 random points at once.
 					breach_x, breach_y := life_inject_soup(&app.life)
 					// Stage the breach shockwave at the first patch, on the
 					// present plane where the wall was punched through.
@@ -511,6 +517,19 @@ run :: proc() {
 					}
 					app.breach_time = app.elapsed
 					app.inject_cooldown = INJECT_COOLDOWN
+				} else if breach_x, breach_y, stuck := life_find_stagnant_tile(&app.life); stuck {
+					// Local stagnation: one region calcified into still
+					// lifes and oscillators while the rest keeps evolving.
+					// The wall is thin where nothing moves, and something
+					// punches through exactly there.
+					life_inject_local_soup(&app.life, breach_x, breach_y)
+					app.breach_center = {
+						f32(breach_x) - f32(GRID) * 0.5 + 0.5,
+						0,
+						f32(breach_y) - f32(GRID) * 0.5 + 0.5,
+					}
+					app.breach_time = app.elapsed
+					app.inject_cooldown = LOCAL_INJECT_COOLDOWN
 				}
 				app.tick_accum -= tick
 				app.scene_dirty = true

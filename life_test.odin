@@ -182,18 +182,88 @@ test_breach_corruption_spreads_and_decays :: proc(t: ^testing.T) {
 	testing.expect_value(t, next_max, u8((255 * CORRUPTION_DECAY_NUM) >> 8))
 
 	// The infection eventually cools back to nothing: the wall heals.
-	for _ in 0 ..< 64 {
+	// Decay is strictly decreasing per generation, so a bounded number of
+	// steps always suffices regardless of how CORRUPTION_DECAY_NUM is tuned.
+	healed := false
+	for _ in 0 ..< 512 {
 		life_step(life)
-	}
-	healed := true
-	for y in 0 ..< GRID {
-		for x in 0 ..< GRID {
-			if life.corruption[life.head][y][x] != 0 {
-				healed = false
+		healed = true
+		for y in 0 ..< GRID {
+			for x in 0 ..< GRID {
+				if life.corruption[life.head][y][x] != 0 {
+					healed = false
+				}
 			}
+		}
+		if healed {
+			break
 		}
 	}
 	testing.expect(t, healed)
+}
+
+@(test)
+test_local_stagnation_detection :: proc(t: ^testing.T) {
+	life := new(Life)
+	defer free(life)
+	life_clear(life)
+	life.rng = 7
+
+	// A block (period 1) in tile (0,0) and a blinker (period 2) in tile
+	// (2,2): both should register as locally stuck. Empty tiles must not,
+	// despite repeating forever, because there is nothing to unstick.
+	life_paint(life, 10, 10, true)
+	life_paint(life, 11, 10, true)
+	life_paint(life, 10, 11, true)
+	life_paint(life, 11, 11, true)
+	life_paint(life, 39, 40, true)
+	life_paint(life, 40, 40, true)
+	life_paint(life, 41, 40, true)
+
+	for _ in 0 ..< LOCAL_STAGNATION_GENS + LOCAL_PERIOD_MAX + 2 {
+		life_step(life)
+	}
+
+	testing.expect(t, life.tile_stagnant[10 / TILE_SIZE][10 / TILE_SIZE] >= LOCAL_STAGNATION_GENS)
+	testing.expect(t, life.tile_stagnant[40 / TILE_SIZE][40 / TILE_SIZE] >= LOCAL_STAGNATION_GENS)
+
+	cx, cy, found := life_find_stagnant_tile(life)
+	testing.expect(t, found)
+	live := life.tile_live[cy / TILE_SIZE][cx / TILE_SIZE]
+	testing.expect(t, live > 0)
+
+	// A localized breach resets the tile's stagnation and corrupts cells.
+	life_inject_local_soup(life, cx, cy)
+	testing.expect_value(t, life.tile_stagnant[cy / TILE_SIZE][cx / TILE_SIZE], 0)
+	testing.expect_value(t, life.injection_count, u64(1))
+	corrupted := false
+	for y in 0 ..< GRID {
+		for x in 0 ..< GRID {
+			if life.corruption[life.head][y][x] == 255 {
+				corrupted = true
+			}
+		}
+	}
+	testing.expect(t, corrupted)
+}
+
+@(test)
+test_local_stagnation_ignores_activity :: proc(t: ^testing.T) {
+	life := new(Life)
+	defer free(life)
+	life_clear(life)
+
+	// An R-pentomino is chaotic for hundreds of generations; its home tile
+	// keeps changing, so no tile it touches should accumulate stagnation
+	// in the early phase.
+	pattern_load(life, .R_Pentomino)
+	for _ in 0 ..< 30 {
+		life_step(life)
+	}
+	center_tile := (GRID / 2) / TILE_SIZE
+	testing.expect(t, life.tile_stagnant[center_tile][center_tile] < LOCAL_STAGNATION_GENS)
+	_, _, found := life_find_stagnant_tile(life)
+	testing.expect(t, !found)
 }
 
 @(test)

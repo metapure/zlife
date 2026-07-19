@@ -15,6 +15,18 @@ SUN_Z :: f32(0.4530)
 SHADOW_STEPS :: 24
 DEFAULT_SEED :: u64(0x5A17_1FE5_D00D_BAAD)
 
+// Local stagnation detection: the global cycle detector needs the entire
+// grid to repeat, so a single chaotic pocket can keep the rest of the wall
+// frozen forever. Tiles that keep repeating with a small period while the
+// world as a whole evolves are locally stuck and become breach targets.
+TILE_SIZE :: 16
+TILE_COUNT :: GRID / TILE_SIZE
+// Longest oscillator period the tile detector can recognize (covers still
+// lifes, blinkers, pulsars, and most common small oscillators).
+LOCAL_PERIOD_MAX :: 6
+// Generations a live tile must stay cyclic before it counts as stuck.
+LOCAL_STAGNATION_GENS :: 64
+
 Life :: struct {
 	layers: [DEPTH][GRID][GRID]u8,
 	// Blackwall corruption per cell, ring-aligned with layers. 255 = a cell
@@ -30,6 +42,9 @@ Life :: struct {
 	rng: u64, // perturbation randomness, independent of the world seed
 	cycle_period: int, // 0 = evolving; otherwise period detected by the last step
 	injection_count: u64,
+	tile_hashes: [LOCAL_PERIOD_MAX][TILE_COUNT][TILE_COUNT]u64, // ring by generation
+	tile_stagnant: [TILE_COUNT][TILE_COUNT]int, // generations each tile has stayed cyclic
+	tile_live: [TILE_COUNT][TILE_COUNT]int, // live cells per tile in the head layer
 }
 
 life_clear :: proc(life: ^Life) {
@@ -125,10 +140,19 @@ life_step :: proc(life: ^Life) {
 	cur_corruption := &life.corruption[life.head]
 	next_live_count := 0
 
+	tile_hashes: [TILE_COUNT][TILE_COUNT]u64
+	tile_live: [TILE_COUNT][TILE_COUNT]int
+	for ty in 0 ..< TILE_COUNT {
+		for tx in 0 ..< TILE_COUNT {
+			tile_hashes[ty][tx] = 0xCBF2_9CE4_8422_2325 // FNV-1a offset basis
+		}
+	}
+
 	// Painting edits the head layer in place, so its cached hash may be stale.
 	life.layer_hashes[life.head] = life_layer_hash(cur)
 
 	for y in 0 ..< GRID {
+		ty := y / TILE_SIZE
 		for x in 0 ..< GRID {
 			neighbors := life_count_neighbors(cur, x, y)
 			alive := cur[y][x] != 0
@@ -138,6 +162,10 @@ life_step :: proc(life: ^Life) {
 				next[y][x] = 1 if neighbors == 3 else 0
 			}
 			next_live_count += int(next[y][x])
+
+			tx := x / TILE_SIZE
+			tile_hashes[ty][tx] = (tile_hashes[ty][tx] ~ u64(next[y][x])) * 0x0000_0100_0000_01B3
+			tile_live[ty][tx] += int(next[y][x])
 
 			// A surviving or newborn cell catches the strongest corruption
 			// in its 3x3 neighborhood, decayed one notch, so the infection
@@ -178,21 +206,66 @@ life_step :: proc(life: ^Life) {
 	life.history_count = min(life.history_count + 1, DEPTH)
 	life.generation += 1
 	life.live_count = next_live_count
+
+	// A tile whose contents match itself 1..LOCAL_PERIOD_MAX generations ago
+	// is repeating with a small period. Anything moving through (a glider,
+	// a growing edge) changes the hash and resets the counter, so only
+	// genuinely settled regions accumulate stagnation.
+	slot := int(life.generation % LOCAL_PERIOD_MAX)
+	for ty in 0 ..< TILE_COUNT {
+		for tx in 0 ..< TILE_COUNT {
+			cyclic := false
+			for k in 1 ..= LOCAL_PERIOD_MAX {
+				if life.generation <= u64(k) {
+					break
+				}
+				if life.tile_hashes[(int(life.generation) - k) % LOCAL_PERIOD_MAX][ty][tx] == tile_hashes[ty][tx] {
+					cyclic = true
+					break
+				}
+			}
+			life.tile_stagnant[ty][tx] = life.tile_stagnant[ty][tx] + 1 if cyclic else 0
+			life.tile_hashes[slot][ty][tx] = tile_hashes[ty][tx]
+			life.tile_live[ty][tx] = tile_live[ty][tx]
+		}
+	}
 }
 
 SOUP_SIZE :: 12
 SOUP_FILL :: f32(0.35)
-// Per-generation corruption decay as a /256 fixed-point factor (~0.90),
-// so a breach cools from 255 to nothing in roughly 20 generations.
-CORRUPTION_DECAY_NUM :: 230
+// Per-generation corruption decay as a /256 fixed-point factor (~0.98),
+// so a breach cools from 255 to nothing in roughly 240 generations —
+// about as long as the visible history wall is deep.
+CORRUPTION_DECAY_NUM :: 254
 
-// Break a detected cycle by letting something crash through the weakened
-// wall: 2-3 small random soup patches, OR-ed over the existing cells and
-// marked fully corrupted. Returns the grid coordinates of the first patch
-// so the app can stage the breach shockwave there.
-life_inject_soup :: proc(life: ^Life) -> (breach_x, breach_y: int) {
+// Stamp one fully corrupted soup patch centered at (cx, cy), OR-ed over
+// the existing cells. The world is toroidal, so patches wrap at the edges.
+@(private)
+life_stamp_soup_patch :: proc(life: ^Life, cx, cy: int) {
 	head := &life.layers[life.head]
 	head_corruption := &life.corruption[life.head]
+	for dy in 0 ..< SOUP_SIZE {
+		for dx in 0 ..< SOUP_SIZE {
+			sample := f32(life_random_u64(&life.rng) >> 40) / f32(1 << 24)
+			if sample >= SOUP_FILL {
+				continue
+			}
+			x := (cx - SOUP_SIZE / 2 + dx + GRID) % GRID
+			y := (cy - SOUP_SIZE / 2 + dy + GRID) % GRID
+			if head[y][x] == 0 {
+				head[y][x] = 1
+				life.live_count += 1
+			}
+			head_corruption[y][x] = 255
+		}
+	}
+}
+
+// Break a detected global cycle by letting something crash through the
+// weakened wall: 2-3 small random soup patches, marked fully corrupted.
+// Returns the grid coordinates of the first patch so the app can stage
+// the breach shockwave there.
+life_inject_soup :: proc(life: ^Life) -> (breach_x, breach_y: int) {
 	patch_count := 2 + int(life_random_u64(&life.rng) & 1)
 	for patch in 0 ..< patch_count {
 		cx := int(life_random_u64(&life.rng) % GRID)
@@ -200,27 +273,45 @@ life_inject_soup :: proc(life: ^Life) -> (breach_x, breach_y: int) {
 		if patch == 0 {
 			breach_x, breach_y = cx, cy
 		}
-		for dy in 0 ..< SOUP_SIZE {
-			for dx in 0 ..< SOUP_SIZE {
-				sample := f32(life_random_u64(&life.rng) >> 40) / f32(1 << 24)
-				if sample >= SOUP_FILL {
-					continue
-				}
-				// The world is toroidal, so patches wrap at the edges.
-				x := (cx - SOUP_SIZE / 2 + dx + GRID) % GRID
-				y := (cy - SOUP_SIZE / 2 + dy + GRID) % GRID
-				if head[y][x] == 0 {
-					head[y][x] = 1
-					life.live_count += 1
-				}
-				head_corruption[y][x] = 255
-			}
-		}
+		life_stamp_soup_patch(life, cx, cy)
 	}
 	life.injection_count += 1
 	life.cycle_period = 0
 	// The head hash is now stale; life_step recomputes it before comparing.
 	return breach_x, breach_y
+}
+
+// Pick a breach target among locally stuck tiles: live tiles that have
+// been repeating with a small period for LOCAL_STAGNATION_GENS
+// generations. When several qualify, a random one is chosen so repeated
+// breaches wander across the calcified regions instead of hammering one
+// corner. Returns the grid coordinates of the tile center.
+life_find_stagnant_tile :: proc(life: ^Life) -> (cx, cy: int, found: bool) {
+	candidates: [TILE_COUNT * TILE_COUNT][2]int
+	count := 0
+	for ty in 0 ..< TILE_COUNT {
+		for tx in 0 ..< TILE_COUNT {
+			if life.tile_stagnant[ty][tx] >= LOCAL_STAGNATION_GENS && life.tile_live[ty][tx] > 0 {
+				candidates[count] = {tx, ty}
+				count += 1
+			}
+		}
+	}
+	if count == 0 {
+		return 0, 0, false
+	}
+	pick := candidates[int(life_random_u64(&life.rng) % u64(count))]
+	return pick[0] * TILE_SIZE + TILE_SIZE / 2, pick[1] * TILE_SIZE + TILE_SIZE / 2, true
+}
+
+// A localized breach: a single soup patch punched into a locally stuck
+// tile while the rest of the world keeps evolving.
+life_inject_local_soup :: proc(life: ^Life, cx, cy: int) {
+	life_stamp_soup_patch(life, cx, cy)
+	life.injection_count += 1
+	// The patch rewrites the tile, so its stagnation restarts immediately
+	// instead of waiting for the next step's hash comparison.
+	life.tile_stagnant[cy / TILE_SIZE][cx / TILE_SIZE] = 0
 }
 
 Shadow_Step :: struct {

@@ -24,10 +24,11 @@ The scene includes:
   brightness scroll running down them, plus sparse cyan sparkles and
   per-voxel data flicker
 - rare glitch streaks that briefly smear individual voxels vertically
-- breach events: when the simulation stagnates, something punches through
-  the wall — a radial shockwave ripples out from the impact point, the lens
-  flinches with a hard glitch/aberration spike, the HUD flashes a cyan
-  BLACKWALL BREACH warning, and the intruding cells arrive fully corrupted
+- breach events: when the simulation stagnates — globally or in a single
+  region — something punches through the wall: a radial shockwave ripples
+  out from the impact point, the lens flinches with a hard glitch/aberration
+  spike, the HUD flashes a cyan BLACKWALL BREACH warning, and the intruding
+  cells arrive fully corrupted
 - an inherited corruption field: cells born next to corrupted cells catch a
   decayed dose, so each breach becomes a cyan-white infection that spreads
   with the population and sinks down the timeline as the wall heals red
@@ -123,6 +124,16 @@ per-generation decay, so every breach leaves a cyan scar that spreads,
 sinks down the history wall, and fades as the wall heals. The full HUD
 shows the detected period and the breach count. Manual stepping with **N**
 detects cycles but never triggers a breach.
+
+Global repetition is not the only weakness. The wall is also watched in
+16x16 tiles: a live tile that keeps repeating with a small period (still
+lifes, blinkers, and other short oscillators) for ~50 generations while the
+rest of the world stays chaotic has calcified, and the wall is thin where
+nothing moves. A localized breach then punches a single corrupted soup
+patch into exactly that region — so a lone active pocket can no longer keep
+the rest of the sculpture frozen forever. Localized breaches pace slower
+than global ones (one per 64 generations at most) and wander randomly
+across the stuck regions.
 
 ### Patterns and display
 
