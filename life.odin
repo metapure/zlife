@@ -236,7 +236,7 @@ SOUP_FILL :: f32(0.35)
 // Per-generation corruption decay as a /256 fixed-point factor (~0.98),
 // so a breach cools from 255 to nothing in roughly 240 generations —
 // about as long as the visible history wall is deep.
-CORRUPTION_DECAY_NUM :: 254
+CORRUPTION_DECAY_NUM :: 253
 
 // Stamp one fully corrupted soup patch centered at (cx, cy), OR-ed over
 // the existing cells. The world is toroidal, so patches wrap at the edges.
