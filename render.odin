@@ -41,10 +41,16 @@ Renderer :: struct {
 	line_pso:       ^MTL.RenderPipelineState,
 	ui_pso:         ^MTL.RenderPipelineState,
 	bg_pso:         ^MTL.RenderPipelineState,
-	post_pso:       ^MTL.RenderPipelineState,
+	bright_pso:     ^MTL.RenderPipelineState,
+	blur_h_pso:     ^MTL.RenderPipelineState,
+	blur_v_pso:     ^MTL.RenderPipelineState,
+	composite_pso:  ^MTL.RenderPipelineState,
 	depth_state:    ^MTL.DepthStencilState,
 	overlay_depth_state: ^MTL.DepthStencilState,
 	depth_texture:  ^MTL.Texture,
+	scene_tex:      ^MTL.Texture,
+	bloom_a:        ^MTL.Texture,
+	bloom_b:        ^MTL.Texture,
 	vertex_buffer:  ^MTL.Buffer,
 	instance_buffer:^MTL.Buffer,
 	uniform_buffer: ^MTL.Buffer,
@@ -110,7 +116,7 @@ renderer_create_grid :: proc(r: ^Renderer) {
 		if i % 8 == 0 || i == GRID / 2 {
 			alpha = 0.10
 		}
-		color := [4]f32{0.45, 0.52, 0.66, alpha}
+		color := [4]f32{0.85, 0.16, 0.20, alpha}
 		line_push(vertices[:], &count, {-half, y0, p}, {half, y0, p}, color)
 		line_push(vertices[:], &count, {p, y0, -half}, {p, y0, half}, color)
 	}
@@ -161,13 +167,17 @@ renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
 	ui_vert_fn := library->newFunctionWithName(NS.AT("ui_vertex"))
 	ui_frag_fn := library->newFunctionWithName(NS.AT("ui_fragment"))
 	post_vert_fn := library->newFunctionWithName(NS.AT("post_vertex"))
-	post_frag_fn := library->newFunctionWithName(NS.AT("post_fragment"))
 	bg_frag_fn := library->newFunctionWithName(NS.AT("bg_fragment"))
+	bright_frag_fn := library->newFunctionWithName(NS.AT("bright_fragment"))
+	blur_h_frag_fn := library->newFunctionWithName(NS.AT("blur_h_fragment"))
+	blur_v_frag_fn := library->newFunctionWithName(NS.AT("blur_v_fragment"))
+	composite_frag_fn := library->newFunctionWithName(NS.AT("composite_fragment"))
 	if vert_fn == nil || frag_fn == nil ||
 	   line_vert_fn == nil || line_frag_fn == nil ||
 	   ui_vert_fn == nil || ui_frag_fn == nil ||
-	   post_vert_fn == nil || post_frag_fn == nil ||
-	   bg_frag_fn == nil {
+	   post_vert_fn == nil || bg_frag_fn == nil ||
+	   bright_frag_fn == nil || blur_h_frag_fn == nil ||
+	   blur_v_frag_fn == nil || composite_frag_fn == nil {
 		fmt.eprintln("Metal shader entry point missing")
 		renderer_destroy(&r)
 		return {}, false
@@ -179,12 +189,17 @@ renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
 	defer ui_vert_fn->release()
 	defer ui_frag_fn->release()
 	defer post_vert_fn->release()
-	defer post_frag_fn->release()
 	defer bg_frag_fn->release()
+	defer bright_frag_fn->release()
+	defer blur_h_frag_fn->release()
+	defer blur_v_frag_fn->release()
+	defer composite_frag_fn->release()
 
+	// The scene renders into a full-resolution HDR texture; post passes
+	// then shape it into the final Blackwall frame on the drawable.
 	pso_desc := NS.new(MTL.RenderPipelineDescriptor)
 	defer pso_desc->release()
-	pso_desc->colorAttachments()->object(0)->setPixelFormat(.BGRA8Unorm_sRGB)
+	pso_desc->colorAttachments()->object(0)->setPixelFormat(.RGBA16Float)
 	pso_desc->setDepthAttachmentPixelFormat(.Depth32Float)
 	pso_desc->setVertexFunction(vert_fn)
 	pso_desc->setFragmentFunction(frag_fn)
@@ -200,7 +215,7 @@ renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
 	line_desc := NS.new(MTL.RenderPipelineDescriptor)
 	defer line_desc->release()
 	line_attachment := line_desc->colorAttachments()->object(0)
-	line_attachment->setPixelFormat(.BGRA8Unorm_sRGB)
+	line_attachment->setPixelFormat(.RGBA16Float)
 	line_attachment->setBlendingEnabled(true)
 	line_attachment->setSourceRGBBlendFactor(.SourceAlpha)
 	line_attachment->setDestinationRGBBlendFactor(.OneMinusSourceAlpha)
@@ -219,7 +234,7 @@ renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
 	ui_desc := NS.new(MTL.RenderPipelineDescriptor)
 	defer ui_desc->release()
 	ui_attachment := ui_desc->colorAttachments()->object(0)
-	ui_attachment->setPixelFormat(.BGRA8Unorm_sRGB)
+	ui_attachment->setPixelFormat(.RGBA16Float)
 	ui_attachment->setBlendingEnabled(true)
 	ui_attachment->setSourceRGBBlendFactor(.SourceAlpha)
 	ui_attachment->setDestinationRGBBlendFactor(.OneMinusSourceAlpha)
@@ -237,7 +252,7 @@ renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
 
 	bg_desc := NS.new(MTL.RenderPipelineDescriptor)
 	defer bg_desc->release()
-	bg_desc->colorAttachments()->object(0)->setPixelFormat(.BGRA8Unorm_sRGB)
+	bg_desc->colorAttachments()->object(0)->setPixelFormat(.RGBA16Float)
 	bg_desc->setDepthAttachmentPixelFormat(.Depth32Float)
 	bg_desc->setVertexFunction(post_vert_fn)
 	bg_desc->setFragmentFunction(bg_frag_fn)
@@ -248,19 +263,50 @@ renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
 		return {}, false
 	}
 
-	post_desc := NS.new(MTL.RenderPipelineDescriptor)
-	defer post_desc->release()
-	post_attachment := post_desc->colorAttachments()->object(0)
-	post_attachment->setPixelFormat(.BGRA8Unorm_sRGB)
-	post_attachment->setBlendingEnabled(true)
-	post_attachment->setSourceRGBBlendFactor(.SourceAlpha)
-	post_attachment->setDestinationRGBBlendFactor(.OneMinusSourceAlpha)
-	post_attachment->setSourceAlphaBlendFactor(.One)
-	post_attachment->setDestinationAlphaBlendFactor(.OneMinusSourceAlpha)
-	post_desc->setDepthAttachmentPixelFormat(.Depth32Float)
-	post_desc->setVertexFunction(post_vert_fn)
-	post_desc->setFragmentFunction(post_frag_fn)
-	r.post_pso, pipeline_error = r.device->newRenderPipelineState(post_desc)
+	// Fullscreen post pipelines: bright pass and blurs write half-res HDR
+	// bloom textures; the composite resolves everything onto the drawable.
+	bright_desc := NS.new(MTL.RenderPipelineDescriptor)
+	defer bright_desc->release()
+	bright_desc->colorAttachments()->object(0)->setPixelFormat(.RGBA16Float)
+	bright_desc->setVertexFunction(post_vert_fn)
+	bright_desc->setFragmentFunction(bright_frag_fn)
+	r.bright_pso, pipeline_error = r.device->newRenderPipelineState(bright_desc)
+	if pipeline_error != nil {
+		fmt.eprintln(pipeline_error->localizedDescription()->odinString())
+		renderer_destroy(&r)
+		return {}, false
+	}
+
+	blur_h_desc := NS.new(MTL.RenderPipelineDescriptor)
+	defer blur_h_desc->release()
+	blur_h_desc->colorAttachments()->object(0)->setPixelFormat(.RGBA16Float)
+	blur_h_desc->setVertexFunction(post_vert_fn)
+	blur_h_desc->setFragmentFunction(blur_h_frag_fn)
+	r.blur_h_pso, pipeline_error = r.device->newRenderPipelineState(blur_h_desc)
+	if pipeline_error != nil {
+		fmt.eprintln(pipeline_error->localizedDescription()->odinString())
+		renderer_destroy(&r)
+		return {}, false
+	}
+
+	blur_v_desc := NS.new(MTL.RenderPipelineDescriptor)
+	defer blur_v_desc->release()
+	blur_v_desc->colorAttachments()->object(0)->setPixelFormat(.RGBA16Float)
+	blur_v_desc->setVertexFunction(post_vert_fn)
+	blur_v_desc->setFragmentFunction(blur_v_frag_fn)
+	r.blur_v_pso, pipeline_error = r.device->newRenderPipelineState(blur_v_desc)
+	if pipeline_error != nil {
+		fmt.eprintln(pipeline_error->localizedDescription()->odinString())
+		renderer_destroy(&r)
+		return {}, false
+	}
+
+	composite_desc := NS.new(MTL.RenderPipelineDescriptor)
+	defer composite_desc->release()
+	composite_desc->colorAttachments()->object(0)->setPixelFormat(.BGRA8Unorm_sRGB)
+	composite_desc->setVertexFunction(post_vert_fn)
+	composite_desc->setFragmentFunction(composite_frag_fn)
+	r.composite_pso, pipeline_error = r.device->newRenderPipelineState(composite_desc)
 	if pipeline_error != nil {
 		fmt.eprintln(pipeline_error->localizedDescription()->odinString())
 		renderer_destroy(&r)
@@ -287,6 +333,8 @@ renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
 	renderer_create_grid(&r)
 
 	if r.queue == nil || r.pso == nil || r.depth_state == nil ||
+	   r.bright_pso == nil || r.blur_h_pso == nil ||
+	   r.blur_v_pso == nil || r.composite_pso == nil ||
 	   r.vertex_buffer == nil || r.instance_buffer == nil ||
 	   r.uniform_buffer == nil || r.grid_buffer == nil || r.ui_buffer == nil {
 		fmt.eprintln("Metal resource allocation failed")
@@ -307,6 +355,18 @@ renderer_resize_depth :: proc(r: ^Renderer, width, height: int) {
 		r.depth_texture->release()
 		r.depth_texture = nil
 	}
+	if r.scene_tex != nil {
+		r.scene_tex->release()
+		r.scene_tex = nil
+	}
+	if r.bloom_a != nil {
+		r.bloom_a->release()
+		r.bloom_a = nil
+	}
+	if r.bloom_b != nil {
+		r.bloom_b->release()
+		r.bloom_b = nil
+	}
 
 	desc := MTL.TextureDescriptor.texture2DDescriptorWithPixelFormat(
 		.Depth32Float,
@@ -317,6 +377,30 @@ renderer_resize_depth :: proc(r: ^Renderer, width, height: int) {
 	desc->setStorageMode(.Private)
 	desc->setUsage({.RenderTarget})
 	r.depth_texture = r.device->newTextureWithDescriptor(desc)
+
+	scene_desc := MTL.TextureDescriptor.texture2DDescriptorWithPixelFormat(
+		.RGBA16Float,
+		NS.UInteger(width),
+		NS.UInteger(height),
+		false,
+	)
+	scene_desc->setStorageMode(.Private)
+	scene_desc->setUsage({.RenderTarget, .ShaderRead})
+	r.scene_tex = r.device->newTextureWithDescriptor(scene_desc)
+
+	bloom_w := max(width / 2, 1)
+	bloom_h := max(height / 2, 1)
+	bloom_desc := MTL.TextureDescriptor.texture2DDescriptorWithPixelFormat(
+		.RGBA16Float,
+		NS.UInteger(bloom_w),
+		NS.UInteger(bloom_h),
+		false,
+	)
+	bloom_desc->setStorageMode(.Private)
+	bloom_desc->setUsage({.RenderTarget, .ShaderRead})
+	r.bloom_a = r.device->newTextureWithDescriptor(bloom_desc)
+	r.bloom_b = r.device->newTextureWithDescriptor(bloom_desc)
+
 	r.depth_w = width
 	r.depth_h = height
 }
@@ -345,7 +429,7 @@ renderer_draw :: proc(
 	NS.scoped_autoreleasepool()
 
 	drawable := r.swapchain->nextDrawable()
-	if drawable == nil || r.depth_texture == nil {
+	if drawable == nil || r.depth_texture == nil || r.scene_tex == nil {
 		return
 	}
 
@@ -376,12 +460,13 @@ renderer_draw :: proc(
 		mem.copy(&ui_dst[0], &ui_vertices[0], ui_count * size_of(UI_Vertex))
 	}
 
+	// Pass 1: render the scene into the full-resolution HDR texture.
 	pass := MTL.RenderPassDescriptor.renderPassDescriptor()
 	color := pass->colorAttachments()->object(0)
 	color->setClearColor(MTL.ClearColor{0.0, 0.0, 0.0, 1.0})
 	color->setLoadAction(.Clear)
 	color->setStoreAction(.Store)
-	color->setTexture(drawable->texture())
+	color->setTexture(r.scene_tex)
 
 	depth := pass->depthAttachment()
 	depth->setTexture(r.depth_texture)
@@ -426,18 +511,67 @@ renderer_draw :: proc(
 		enc->drawPrimitives(.Triangle, 0, NS.UInteger(ui_count))
 	}
 
-	// CRT overlay (scanlines, grain, vignette) covers the whole frame, HUD included.
-	enc->setRenderPipelineState(r.post_pso)
-	enc->setDepthStencilState(r.overlay_depth_state)
-	enc->setFragmentBuffer(r.uniform_buffer, 0, 0)
-	enc->drawPrimitives(.Triangle, 0, 3)
-
 	enc->endEncoding()
+
+	// Pass 2: bright-pass threshold, downsampled into the half-res bloom
+	// texture. Pass 3/4: separable Gaussian blur ping-ponged across the
+	// two bloom textures.
+	bright_pass := MTL.RenderPassDescriptor.renderPassDescriptor()
+	bright_color := bright_pass->colorAttachments()->object(0)
+	bright_color->setLoadAction(.DontCare)
+	bright_color->setStoreAction(.Store)
+	bright_color->setTexture(r.bloom_a)
+	enc = cmd->renderCommandEncoderWithDescriptor(bright_pass)
+	enc->setRenderPipelineState(r.bright_pso)
+	enc->setFragmentTexture(r.scene_tex, 0)
+	enc->drawPrimitives(.Triangle, 0, 3)
+	enc->endEncoding()
+
+	blur_h_pass := MTL.RenderPassDescriptor.renderPassDescriptor()
+	blur_h_color := blur_h_pass->colorAttachments()->object(0)
+	blur_h_color->setLoadAction(.DontCare)
+	blur_h_color->setStoreAction(.Store)
+	blur_h_color->setTexture(r.bloom_b)
+	enc = cmd->renderCommandEncoderWithDescriptor(blur_h_pass)
+	enc->setRenderPipelineState(r.blur_h_pso)
+	enc->setFragmentTexture(r.bloom_a, 0)
+	enc->drawPrimitives(.Triangle, 0, 3)
+	enc->endEncoding()
+
+	blur_v_pass := MTL.RenderPassDescriptor.renderPassDescriptor()
+	blur_v_color := blur_v_pass->colorAttachments()->object(0)
+	blur_v_color->setLoadAction(.DontCare)
+	blur_v_color->setStoreAction(.Store)
+	blur_v_color->setTexture(r.bloom_a)
+	enc = cmd->renderCommandEncoderWithDescriptor(blur_v_pass)
+	enc->setRenderPipelineState(r.blur_v_pso)
+	enc->setFragmentTexture(r.bloom_b, 0)
+	enc->drawPrimitives(.Triangle, 0, 3)
+	enc->endEncoding()
+
+	// Pass 5: composite onto the drawable — glitch displacement, chromatic
+	// aberration, bloom, scanlines, vignette, grain, and tonemap.
+	composite_pass := MTL.RenderPassDescriptor.renderPassDescriptor()
+	composite_color := composite_pass->colorAttachments()->object(0)
+	composite_color->setLoadAction(.DontCare)
+	composite_color->setStoreAction(.Store)
+	composite_color->setTexture(drawable->texture())
+	enc = cmd->renderCommandEncoderWithDescriptor(composite_pass)
+	enc->setRenderPipelineState(r.composite_pso)
+	enc->setFragmentBuffer(r.uniform_buffer, 0, 0)
+	enc->setFragmentTexture(r.scene_tex, 0)
+	enc->setFragmentTexture(r.bloom_a, 1)
+	enc->drawPrimitives(.Triangle, 0, 3)
+	enc->endEncoding()
+
 	cmd->presentDrawable(drawable)
 	cmd->commit()
 }
 
 renderer_destroy :: proc(r: ^Renderer) {
+	if r.bloom_b != nil do r.bloom_b->release()
+	if r.bloom_a != nil do r.bloom_a->release()
+	if r.scene_tex != nil do r.scene_tex->release()
 	if r.depth_texture != nil do r.depth_texture->release()
 	if r.ui_buffer != nil do r.ui_buffer->release()
 	if r.grid_buffer != nil do r.grid_buffer->release()
@@ -446,7 +580,10 @@ renderer_destroy :: proc(r: ^Renderer) {
 	if r.vertex_buffer != nil do r.vertex_buffer->release()
 	if r.overlay_depth_state != nil do r.overlay_depth_state->release()
 	if r.depth_state != nil do r.depth_state->release()
-	if r.post_pso != nil do r.post_pso->release()
+	if r.composite_pso != nil do r.composite_pso->release()
+	if r.blur_v_pso != nil do r.blur_v_pso->release()
+	if r.blur_h_pso != nil do r.blur_h_pso->release()
+	if r.bright_pso != nil do r.bright_pso->release()
 	if r.bg_pso != nil do r.bg_pso->release()
 	if r.ui_pso != nil do r.ui_pso->release()
 	if r.line_pso != nil do r.line_pso->release()

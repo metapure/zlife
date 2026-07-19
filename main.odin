@@ -115,9 +115,9 @@ build_hud :: proc(app: ^App) {
 		return
 	}
 
-	primary := [4]f32{0.72, 0.78, 0.90, 0.90}
-	accent := [4]f32{0.90, 0.95, 1.0, 0.96}
-	muted := [4]f32{0.30, 0.35, 0.45, 0.75}
+	primary := [4]f32{0.95, 0.42, 0.38, 0.90}
+	accent := [4]f32{1.0, 0.85, 0.25, 0.96}
+	muted := [4]f32{0.48, 0.14, 0.13, 0.80}
 	status := "PAUSED" if app.paused else "RUNNING"
 
 	if app.hud_mode == .Minimal {

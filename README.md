@@ -4,23 +4,32 @@ A living sculpture of Conway's Game of Life, built with **Odin + Metal** for
 macOS.
 
 This is regular, toroidal B3/S23 Life on a 96×96 grid. The third axis is not
-another simulation dimension: **time flows downward**. The luminous ice-white
-plane on top is the present; up to 255 earlier generations hang beneath it as
-a monolith of blue-white voxels deepening into slate and finally dissolving
-into black, with no gaps in space or time. The tower glides downward
-continuously between generations instead of stepping.
+another simulation dimension: **time flows downward**. The white-hot plane on
+top is the present; up to 255 earlier generations hang beneath it as a wall
+of emissive voxels burning from magenta through crimson into ember red and
+finally dissolving into black, with no gaps in space or time. The tower
+glides downward continuously between generations instead of stepping.
+
+The look is modeled on the Blackwall from Cyberpunk 2077: a seething
+firewall of red data laced with cyan sparks, seen through a glitchy,
+chromatically fringed lens.
 
 The scene includes:
 
-- a gently pulsing present generation atop a luminous ice-blue history
-- per-voxel ambient occlusion and an icy rim light
-- a subtle film-grain overlay on an otherwise clean, pure-black frame
+- a pulsing white-hot present generation atop a crimson-and-magenta history
+- a rotating subset of cells that burn cyan, plus per-voxel data flicker
+- rare glitch streaks that briefly smear individual voxels vertically
+- an HDR post pipeline: bloom, chromatic aberration, scanlines, glitch band
+  displacement, vignette, and film grain over a near-black red haze
+- per-voxel ambient occlusion and a ray-marched shading term that keep the
+  emissive wall reading as a 3D structure
 - a slow ambient camera drift after a few seconds of inactivity
 - an editing grid that appears only while the cursor is over the present plane
 - full-history and isolated-slice views
-- direct painting with a warm-white hover preview
+- direct painting with a bright cyan hover preview
 - five curated pattern presets
-- a minimal bitmap HUD that expands to full statistics on demand
+- a minimal bitmap HUD in Cyberpunk yellow and red that expands to full
+  statistics on demand
 
 ## Requirements
 
@@ -100,8 +109,12 @@ Starts **paused** with a random seed so you can paint before pressing Space.
 
 - Generation history is stored as a ring buffer, so stepping overwrites only
   the expired oldest slice instead of shifting the full 3D volume.
-- Cells, grid lines, HUD glyphs, and the film-grain overlay use separate
-  Metal pipelines within a single render pass.
+- The frame is built in five passes: the scene (background, grid, cells,
+  HUD) renders into a full-resolution RGBA16Float HDR texture; a soft-knee
+  bright pass downsamples the hot pixels into a half-resolution texture; a
+  separable Gaussian blur ping-pongs it twice; and a composite pass applies
+  glitch band displacement, chromatic aberration, bloom, scanlines,
+  vignette, grain, and an ACES-style tonemap onto the drawable.
 - The downward glide is purely a vertex-shader offset driven by the
   fractional progress toward the next generation; the simulation itself
   still steps discretely.
