@@ -12,11 +12,15 @@ Camera :: struct {
 }
 
 camera_default :: proc() -> Camera {
+	// History hangs downward from the present plane, so the reference-style
+	// "spires rising into the dark" reads from BELOW: eye near the base of
+	// the sculpture, negative pitch looking up, dissolving tips overhead.
+	// Hand-tuned framing (V key snapshot), for the 96 x 96 x 256 tower.
 	return Camera {
-		yaw      = 0.55,
-		pitch    = 0.55,
-		distance = 88,
-		target   = {0, 0, f32(DEPTH - 1) * 0.5},
+		yaw      = -0.977,
+		pitch    = -0.740,
+		distance = 159.4,
+		target   = {-7.66, -49.19, 8.74},
 		aspect   = 16.0 / 9.0,
 	}
 }
@@ -53,7 +57,7 @@ metal_perspective :: proc(fovy, aspect, near, far: f32) -> matrix[4, 4]f32 {
 camera_view_proj :: proc(cam: Camera) -> matrix[4, 4]f32 {
 	eye := camera_eye(cam)
 	view := linalg.matrix4_look_at_f32(eye, cam.target, {0, 1, 0}, false)
-	proj := metal_perspective(math.to_radians_f32(50), cam.aspect, 0.1, 500)
+	proj := metal_perspective(math.to_radians_f32(40), cam.aspect, 0.1, 1200)
 	return proj * view
 }
 
@@ -63,7 +67,7 @@ camera_orbit :: proc(cam: ^Camera, dx, dy: f32) {
 }
 
 camera_zoom :: proc(cam: ^Camera, delta: f32) {
-	cam.distance = math.clamp(cam.distance * math.pow(0.9, delta), 20, 250)
+	cam.distance = math.clamp(cam.distance * math.pow(0.9, delta), 20, 600)
 }
 
 camera_pan :: proc(cam: ^Camera, dx, dy: f32) {
@@ -77,7 +81,7 @@ camera_pan :: proc(cam: ^Camera, dx, dy: f32) {
 	cam.target += (right * -dx + up * dy) * speed
 }
 
-// Raycast mouse onto the z=0 plane (current generation). Returns grid coords if hit.
+// Raycast mouse onto the y=0 plane (current generation). Returns grid coords if hit.
 camera_pick_cell :: proc(cam: Camera, mx, my: f32, fb_w, fb_h: f32) -> (x, y: int, ok: bool) {
 	if fb_w <= 0 || fb_h <= 0 {
 		return 0, 0, false
@@ -98,10 +102,10 @@ camera_pick_cell :: proc(cam: Camera, mx, my: f32, fb_w, fb_h: f32) -> (x, y: in
 	far := p_far.xyz / p_far.w
 
 	dir := far - near
-	if abs(dir.z) < 1e-6 {
+	if abs(dir.y) < 1e-6 {
 		return 0, 0, false
 	}
-	t := -near.z / dir.z
+	t := -near.y / dir.y
 	if t < 0 {
 		return 0, 0, false
 	}
@@ -110,7 +114,7 @@ camera_pick_cell :: proc(cam: Camera, mx, my: f32, fb_w, fb_h: f32) -> (x, y: in
 	half_w := f32(GRID) * 0.5
 	half_h := f32(GRID) * 0.5
 	gx := int(math.floor(hit.x + half_w))
-	gy := int(math.floor(hit.y + half_h))
+	gy := int(math.floor(hit.z + half_h))
 	if gx < 0 || gx >= GRID || gy < 0 || gy >= GRID {
 		return 0, 0, false
 	}

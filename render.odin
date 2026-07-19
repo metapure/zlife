@@ -12,12 +12,15 @@ Instance :: struct {
 	age: f32,
 	scale: f32,
 	glow: f32,
-	padding: [2]f32,
+	occlusion: f32,
+	sun: f32, // 0..1 ray-marched visibility toward the sun
 }
 
 Uniforms :: struct {
 	view_proj: matrix[4, 4]f32,
 	params: [4]f32,
+	resolution: [4]f32,
+	eye: [4]f32,
 }
 
 Vertex :: struct {
@@ -37,6 +40,8 @@ Renderer :: struct {
 	pso:            ^MTL.RenderPipelineState,
 	line_pso:       ^MTL.RenderPipelineState,
 	ui_pso:         ^MTL.RenderPipelineState,
+	bg_pso:         ^MTL.RenderPipelineState,
+	post_pso:       ^MTL.RenderPipelineState,
 	depth_state:    ^MTL.DepthStencilState,
 	overlay_depth_state: ^MTL.DepthStencilState,
 	depth_texture:  ^MTL.Texture,
@@ -96,35 +101,21 @@ renderer_create_grid :: proc(r: ^Renderer) {
 	vertices: [512]Line_Vertex
 	count := 0
 	half := f32(GRID) * 0.5
-	z0 := f32(-0.52)
+	// Editing plane floats just above the present layer; history hangs below.
+	y0 := f32(0.52)
 
 	for i in 0 ..= GRID {
 		p := f32(i) - half
-		alpha: f32 = 0.07
+		alpha: f32 = 0.04
 		if i % 8 == 0 || i == GRID / 2 {
-			alpha = 0.22
+			alpha = 0.10
 		}
-		color := [4]f32{0.15, 0.72, 0.92, alpha}
-		line_push(vertices[:], &count, {-half, p, z0}, {half, p, z0}, color)
-		line_push(vertices[:], &count, {p, -half, z0}, {p, half, z0}, color)
+		color := [4]f32{0.45, 0.52, 0.66, alpha}
+		line_push(vertices[:], &count, {-half, y0, p}, {half, y0, p}, color)
+		line_push(vertices[:], &count, {p, y0, -half}, {p, y0, half}, color)
 	}
-
-	bounds_color := [4]f32{0.28, 0.46, 0.92, 0.34}
-	z1 := f32(DEPTH) - 0.5
-	corners := [?][3]f32{
-		{-half, -half, z0}, {half, -half, z0}, {half, half, z0}, {-half, half, z0},
-		{-half, -half, z1}, {half, -half, z1}, {half, half, z1}, {-half, half, z1},
-	}
-	edges := [?][2]int{
-		{0, 1}, {1, 2}, {2, 3}, {3, 0},
-		{4, 5}, {5, 6}, {6, 7}, {7, 4},
-		{0, 4}, {1, 5}, {2, 6}, {3, 7},
-	}
-	for edge in edges {
-		line_push(vertices[:], &count, corners[edge.x], corners[edge.y], bounds_color)
-	}
-	r.grid_buffer = r.device->newBufferWithSlice(vertices[:count], {})
 	r.grid_vertex_count = count
+	r.grid_buffer = r.device->newBufferWithSlice(vertices[:count], {})
 }
 
 renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
@@ -169,9 +160,14 @@ renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
 	line_frag_fn := library->newFunctionWithName(NS.AT("line_fragment"))
 	ui_vert_fn := library->newFunctionWithName(NS.AT("ui_vertex"))
 	ui_frag_fn := library->newFunctionWithName(NS.AT("ui_fragment"))
+	post_vert_fn := library->newFunctionWithName(NS.AT("post_vertex"))
+	post_frag_fn := library->newFunctionWithName(NS.AT("post_fragment"))
+	bg_frag_fn := library->newFunctionWithName(NS.AT("bg_fragment"))
 	if vert_fn == nil || frag_fn == nil ||
 	   line_vert_fn == nil || line_frag_fn == nil ||
-	   ui_vert_fn == nil || ui_frag_fn == nil {
+	   ui_vert_fn == nil || ui_frag_fn == nil ||
+	   post_vert_fn == nil || post_frag_fn == nil ||
+	   bg_frag_fn == nil {
 		fmt.eprintln("Metal shader entry point missing")
 		renderer_destroy(&r)
 		return {}, false
@@ -182,6 +178,9 @@ renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
 	defer line_frag_fn->release()
 	defer ui_vert_fn->release()
 	defer ui_frag_fn->release()
+	defer post_vert_fn->release()
+	defer post_frag_fn->release()
+	defer bg_frag_fn->release()
 
 	pso_desc := NS.new(MTL.RenderPipelineDescriptor)
 	defer pso_desc->release()
@@ -230,6 +229,38 @@ renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
 	ui_desc->setVertexFunction(ui_vert_fn)
 	ui_desc->setFragmentFunction(ui_frag_fn)
 	r.ui_pso, pipeline_error = r.device->newRenderPipelineState(ui_desc)
+	if pipeline_error != nil {
+		fmt.eprintln(pipeline_error->localizedDescription()->odinString())
+		renderer_destroy(&r)
+		return {}, false
+	}
+
+	bg_desc := NS.new(MTL.RenderPipelineDescriptor)
+	defer bg_desc->release()
+	bg_desc->colorAttachments()->object(0)->setPixelFormat(.BGRA8Unorm_sRGB)
+	bg_desc->setDepthAttachmentPixelFormat(.Depth32Float)
+	bg_desc->setVertexFunction(post_vert_fn)
+	bg_desc->setFragmentFunction(bg_frag_fn)
+	r.bg_pso, pipeline_error = r.device->newRenderPipelineState(bg_desc)
+	if pipeline_error != nil {
+		fmt.eprintln(pipeline_error->localizedDescription()->odinString())
+		renderer_destroy(&r)
+		return {}, false
+	}
+
+	post_desc := NS.new(MTL.RenderPipelineDescriptor)
+	defer post_desc->release()
+	post_attachment := post_desc->colorAttachments()->object(0)
+	post_attachment->setPixelFormat(.BGRA8Unorm_sRGB)
+	post_attachment->setBlendingEnabled(true)
+	post_attachment->setSourceRGBBlendFactor(.SourceAlpha)
+	post_attachment->setDestinationRGBBlendFactor(.OneMinusSourceAlpha)
+	post_attachment->setSourceAlphaBlendFactor(.One)
+	post_attachment->setDestinationAlphaBlendFactor(.OneMinusSourceAlpha)
+	post_desc->setDepthAttachmentPixelFormat(.Depth32Float)
+	post_desc->setVertexFunction(post_vert_fn)
+	post_desc->setFragmentFunction(post_frag_fn)
+	r.post_pso, pipeline_error = r.device->newRenderPipelineState(post_desc)
 	if pipeline_error != nil {
 		fmt.eprintln(pipeline_error->localizedDescription()->odinString())
 		renderer_destroy(&r)
@@ -302,9 +333,11 @@ renderer_draw :: proc(
 	r: ^Renderer,
 	instances: []Instance,
 	view_proj: matrix[4, 4]f32,
+	eye: [3]f32,
 	elapsed: f32,
+	tick_phase: f32,
 	selected_age: int,
-	show_grid: bool,
+	show_editing_grid: bool,
 	previews: []Instance,
 	ui_vertices: []UI_Vertex,
 	upload_instances: bool,
@@ -333,7 +366,9 @@ renderer_draw :: proc(
 
 	uniforms := r.uniform_buffer->contentsAsSlice([]Uniforms)
 	uniforms[0].view_proj = view_proj
-	uniforms[0].params = {elapsed, f32(selected_age), f32(DEPTH), 0}
+	uniforms[0].params = {elapsed, f32(selected_age), f32(DEPTH), tick_phase}
+	uniforms[0].resolution = {f32(r.depth_w), f32(r.depth_h), 0, 0}
+	uniforms[0].eye = {eye.x, eye.y, eye.z, 0}
 
 	ui_count := min(len(ui_vertices), UI_MAX_VERTICES)
 	if ui_count > 0 {
@@ -343,7 +378,7 @@ renderer_draw :: proc(
 
 	pass := MTL.RenderPassDescriptor.renderPassDescriptor()
 	color := pass->colorAttachments()->object(0)
-	color->setClearColor(MTL.ClearColor{0.04, 0.05, 0.08, 1.0})
+	color->setClearColor(MTL.ClearColor{0.0, 0.0, 0.0, 1.0})
 	color->setLoadAction(.Clear)
 	color->setStoreAction(.Store)
 	color->setTexture(drawable->texture())
@@ -357,7 +392,13 @@ renderer_draw :: proc(
 	cmd := r.queue->commandBuffer()
 	enc := cmd->renderCommandEncoderWithDescriptor(pass)
 
-	if show_grid {
+	// Charcoal gradient backdrop, drawn behind everything.
+	enc->setRenderPipelineState(r.bg_pso)
+	enc->setDepthStencilState(r.overlay_depth_state)
+	enc->setFragmentBuffer(r.uniform_buffer, 0, 0)
+	enc->drawPrimitives(.Triangle, 0, 3)
+
+	if show_editing_grid {
 		enc->setRenderPipelineState(r.line_pso)
 		enc->setDepthStencilState(r.depth_state)
 		enc->setVertexBuffer(r.grid_buffer, 0, 0)
@@ -372,6 +413,7 @@ renderer_draw :: proc(
 	enc->setVertexBuffer(r.vertex_buffer, 0, 0)
 	enc->setVertexBuffer(r.instance_buffer, 0, 1)
 	enc->setVertexBuffer(r.uniform_buffer, 0, 2)
+	enc->setFragmentBuffer(r.uniform_buffer, 0, 0)
 
 	if inst_count > 0 {
 		enc->drawPrimitivesWithInstanceCount(.Triangle, 0, NS.UInteger(len(CUBE_VERTICES)), NS.UInteger(inst_count))
@@ -383,6 +425,12 @@ renderer_draw :: proc(
 		enc->setVertexBuffer(r.ui_buffer, 0, 0)
 		enc->drawPrimitives(.Triangle, 0, NS.UInteger(ui_count))
 	}
+
+	// CRT overlay (scanlines, grain, vignette) covers the whole frame, HUD included.
+	enc->setRenderPipelineState(r.post_pso)
+	enc->setDepthStencilState(r.overlay_depth_state)
+	enc->setFragmentBuffer(r.uniform_buffer, 0, 0)
+	enc->drawPrimitives(.Triangle, 0, 3)
 
 	enc->endEncoding()
 	cmd->presentDrawable(drawable)
@@ -398,6 +446,8 @@ renderer_destroy :: proc(r: ^Renderer) {
 	if r.vertex_buffer != nil do r.vertex_buffer->release()
 	if r.overlay_depth_state != nil do r.overlay_depth_state->release()
 	if r.depth_state != nil do r.depth_state->release()
+	if r.post_pso != nil do r.post_pso->release()
+	if r.bg_pso != nil do r.bg_pso->release()
 	if r.ui_pso != nil do r.ui_pso->release()
 	if r.line_pso != nil do r.line_pso->release()
 	if r.pso != nil do r.pso->release()
