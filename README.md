@@ -3,9 +3,9 @@
 A living sculpture of Conway's Game of Life, built with **Odin + Metal** for
 macOS.
 
-This is regular, toroidal B3/S23 Life on a 256×256 grid. The third axis is not
+This is regular, toroidal B3/S23 Life on a 2048×2048 grid. The third axis is not
 another simulation dimension: **time flows downward**. The searing red plane
-on top is the present; up to 1023 earlier generations hang beneath it as a
+on top is the present; up to 15 earlier generations hang beneath it as a
 wall of emissive voxels burning from magenta through crimson into ember red
 and finally dissolving into black, with no gaps in space or time. The tower
 glides downward continuously between generations instead of stepping.
@@ -32,7 +32,8 @@ The scene includes:
 - an editing grid that appears only while the cursor is over the present plane
 - full-history and isolated-slice views
 - direct painting with a bright cyan hover preview
-- seven curated pattern presets: guns, methuselahs, and puffers
+- twelve curated pattern presets: guns, methuselahs, puffers, rakes, a
+  spacefiller, and Gosper's Breeder 1
 - a minimal bitmap HUD in Cyberpunk yellow and red that expands to full
   statistics on demand
 
@@ -106,10 +107,16 @@ detected period and how many soups have been injected. Manual stepping with
 - **U** — cycle the HUD: minimal, full statistics, hidden
 - **Esc** — quit
 
-Included patterns are chosen for long, self-sustaining evolutions: Gosper Gun
-(infinite glider stream), R-pentomino (1103 generations), Acorn (5206),
-Rabbits (17331), Lidka (29055), Switch Engine (minimal 10-cell infinite
-growth), and Puffer Train (an eternal c/2 engine with a dirty debris trail).
+Included patterns are chosen for long, self-sustaining evolutions. Small
+starters: Gosper Gun (infinite glider stream), R-pentomino (1103
+generations), Acorn (5206), Rabbits (17331), Lidka (29055), Switch Engine
+(minimal 10-cell infinite growth), and Puffer Train (an eternal c/2 engine
+with a dirty debris trail). Big ones sized for the 2048-cell grid: Space Rake
+(a glider-firing spaceship convoy), Noah's Ark (diagonal switch-engine
+puffer), Frothing Puffer (a c/2 engine with a boiling, barely-stable wake),
+Max Spacefiller (fills the plane with zebra stripes at the speed of light),
+and Breeder 1 (Gosper's original quadratic-growth monster: a puffer flotilla
+that lays down glider guns as it flies).
 
 Starts **paused** with a random seed so you can paint before pressing Space.
 

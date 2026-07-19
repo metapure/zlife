@@ -30,7 +30,7 @@ App :: struct {
 	camera: Camera,
 	instances: []Instance, // MAX_INSTANCES entries, heap-allocated in run()
 	instance_count: int,
-	preview_instances: [64]Instance,
+	preview_instances: [PREVIEW_MAX]Instance,
 	preview_count: int,
 	ui_vertices: [UI_MAX_VERTICES]UI_Vertex,
 	ui_count: int,
@@ -471,7 +471,7 @@ run :: proc() {
 		// Hover/pattern preview is tiny and re-uploads every frame.
 		app.preview_count = 0
 		if app.hover_valid && !app.orbiting && !app.panning {
-			preview_cells: [64][2]int
+			preview_cells: [PREVIEW_MAX][2]int
 			cell_count := 1
 			preview_cells[0] = {app.hover_x, app.hover_y}
 			if app.pattern_preview_active {

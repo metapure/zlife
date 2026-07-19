@@ -12,16 +12,14 @@ Camera :: struct {
 }
 
 camera_default :: proc() -> Camera {
-	// History hangs downward from the present plane, so the reference-style
-	// "spires rising into the dark" reads from BELOW: eye near the base of
-	// the sculpture, negative pitch looking up, dissolving tips overhead.
-	// Scaled up from the hand-tuned 96 x 96 x 256 framing (V key snapshot)
-	// for the 256 x 256 x 1024 tower; re-tune with V as needed.
+	// The 2048 x 2048 x 16 world is a vast thin slab rather than a tower:
+	// keep the hand-tuned overhead angle (V key snapshot) but pull back far
+	// enough to frame the full plane, centered on the slab. Re-tune with V.
 	return Camera {
-		yaw      = 8.027,
-		pitch    = 1.198,
-		distance = 1600.0,
-		target   = {82.95, -333.92, -20.88},
+		yaw      = 7.041,
+		pitch    = -0.553,
+		distance = 1525.1,
+		target   = {-279.60, -282.30, -244.16},
 		aspect   = 16.0 / 9.0,
 	}
 }
@@ -58,7 +56,7 @@ metal_perspective :: proc(fovy, aspect, near, far: f32) -> matrix[4, 4]f32 {
 camera_view_proj :: proc(cam: Camera) -> matrix[4, 4]f32 {
 	eye := camera_eye(cam)
 	view := linalg.matrix4_look_at_f32(eye, cam.target, {0, 1, 0}, false)
-	proj := metal_perspective(math.to_radians_f32(40), cam.aspect, 0.1, 3500)
+	proj := metal_perspective(math.to_radians_f32(40), cam.aspect, 0.5, 10000)
 	return proj * view
 }
 
@@ -68,7 +66,7 @@ camera_orbit :: proc(cam: ^Camera, dx, dy: f32) {
 }
 
 camera_zoom :: proc(cam: ^Camera, delta: f32) {
-	cam.distance = math.clamp(cam.distance * math.pow(0.9, delta), 20, 1600)
+	cam.distance = math.clamp(cam.distance * math.pow(0.9, delta), 20, 6000)
 }
 
 camera_pan :: proc(cam: ^Camera, dx, dy: f32) {

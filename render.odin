@@ -87,9 +87,10 @@ CUBE_VERTICES := [?]Vertex {
 
 SHADER_SRC :: string(#load("shaders.metal"))
 
-// Hover/pattern previews live in their own tiny buffer, re-uploaded every
-// frame independently of the multi-million-instance scene buffer.
-PREVIEW_MAX :: 64
+// Hover/pattern previews live in their own small buffer, re-uploaded every
+// frame independently of the multi-million-instance scene buffer. Sized for
+// the largest preset (Breeder 1, 4060 cells).
+PREVIEW_MAX :: 4096
 
 @(private)
 line_push :: proc(
@@ -109,7 +110,8 @@ line_push :: proc(
 
 @(private)
 renderer_create_grid :: proc(r: ^Renderer) {
-	vertices: [(GRID + 1) * 4]Line_Vertex
+	vertices := make([]Line_Vertex, (GRID + 1) * 4)
+	defer delete(vertices)
 	count := 0
 	half := f32(GRID) * 0.5
 	// Editing plane floats just above the present layer; history hangs below.
