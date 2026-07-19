@@ -53,6 +53,7 @@ Renderer :: struct {
 	bloom_b:        ^MTL.Texture,
 	vertex_buffer:  ^MTL.Buffer,
 	instance_buffer:^MTL.Buffer,
+	preview_buffer: ^MTL.Buffer,
 	uniform_buffer: ^MTL.Buffer,
 	grid_buffer:    ^MTL.Buffer,
 	ui_buffer:      ^MTL.Buffer,
@@ -86,6 +87,10 @@ CUBE_VERTICES := [?]Vertex {
 
 SHADER_SRC :: string(#load("shaders.metal"))
 
+// Hover/pattern previews live in their own tiny buffer, re-uploaded every
+// frame independently of the multi-million-instance scene buffer.
+PREVIEW_MAX :: 64
+
 @(private)
 line_push :: proc(
 	vertices: []Line_Vertex,
@@ -104,7 +109,7 @@ line_push :: proc(
 
 @(private)
 renderer_create_grid :: proc(r: ^Renderer) {
-	vertices: [512]Line_Vertex
+	vertices: [(GRID + 1) * 4]Line_Vertex
 	count := 0
 	half := f32(GRID) * 0.5
 	// Editing plane floats just above the present layer; history hangs below.
@@ -326,8 +331,9 @@ renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
 	r.overlay_depth_state = r.device->newDepthStencilState(overlay_ds_desc)
 
 	r.vertex_buffer = r.device->newBufferWithSlice(CUBE_VERTICES[:], {})
-	r.max_instances = GRID * GRID * DEPTH + 64
+	r.max_instances = MAX_INSTANCES
 	r.instance_buffer = r.device->newBufferWithLength(NS.UInteger(r.max_instances * size_of(Instance)), {})
+	r.preview_buffer = r.device->newBufferWithLength(NS.UInteger(PREVIEW_MAX * size_of(Instance)), {})
 	r.uniform_buffer = r.device->newBufferWithLength(NS.UInteger(size_of(Uniforms)), {})
 	r.ui_buffer = r.device->newBufferWithLength(NS.UInteger(UI_MAX_VERTICES * size_of(UI_Vertex)), {})
 	renderer_create_grid(&r)
@@ -336,6 +342,7 @@ renderer_init :: proc(native_window: ^NS.Window) -> (r: Renderer, ok: bool) {
 	   r.bright_pso == nil || r.blur_h_pso == nil ||
 	   r.blur_v_pso == nil || r.composite_pso == nil ||
 	   r.vertex_buffer == nil || r.instance_buffer == nil ||
+	   r.preview_buffer == nil ||
 	   r.uniform_buffer == nil || r.grid_buffer == nil || r.ui_buffer == nil {
 		fmt.eprintln("Metal resource allocation failed")
 		renderer_destroy(&r)
@@ -435,17 +442,18 @@ renderer_draw :: proc(
 
 	inst_count := r.instance_count
 	if upload_instances {
-		preview_count := min(len(previews), r.max_instances)
-		inst_count = min(len(instances), r.max_instances - preview_count)
+		inst_count = min(len(instances), r.max_instances)
 		dst := r.instance_buffer->contentsAsSlice([]Instance)
 		if inst_count > 0 {
 			mem.copy(&dst[0], &instances[0], inst_count * size_of(Instance))
 		}
-		if preview_count > 0 {
-			mem.copy(&dst[inst_count], &previews[0], preview_count * size_of(Instance))
-			inst_count += preview_count
-		}
 		r.instance_count = inst_count
+	}
+
+	preview_count := min(len(previews), PREVIEW_MAX)
+	if preview_count > 0 {
+		preview_dst := r.preview_buffer->contentsAsSlice([]Instance)
+		mem.copy(&preview_dst[0], &previews[0], preview_count * size_of(Instance))
 	}
 
 	uniforms := r.uniform_buffer->contentsAsSlice([]Uniforms)
@@ -502,6 +510,11 @@ renderer_draw :: proc(
 
 	if inst_count > 0 {
 		enc->drawPrimitivesWithInstanceCount(.Triangle, 0, NS.UInteger(len(CUBE_VERTICES)), NS.UInteger(inst_count))
+	}
+
+	if preview_count > 0 {
+		enc->setVertexBuffer(r.preview_buffer, 0, 1)
+		enc->drawPrimitivesWithInstanceCount(.Triangle, 0, NS.UInteger(len(CUBE_VERTICES)), NS.UInteger(preview_count))
 	}
 
 	if ui_count > 0 {
@@ -576,6 +589,7 @@ renderer_destroy :: proc(r: ^Renderer) {
 	if r.ui_buffer != nil do r.ui_buffer->release()
 	if r.grid_buffer != nil do r.grid_buffer->release()
 	if r.uniform_buffer != nil do r.uniform_buffer->release()
+	if r.preview_buffer != nil do r.preview_buffer->release()
 	if r.instance_buffer != nil do r.instance_buffer->release()
 	if r.vertex_buffer != nil do r.vertex_buffer->release()
 	if r.overlay_depth_state != nil do r.overlay_depth_state->release()

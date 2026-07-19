@@ -28,7 +28,7 @@ App :: struct {
 	renderer: Renderer,
 	life: Life,
 	camera: Camera,
-	instances: [GRID * GRID * DEPTH]Instance,
+	instances: []Instance, // MAX_INSTANCES entries, heap-allocated in run()
 	instance_count: int,
 	preview_instances: [64]Instance,
 	preview_count: int,
@@ -80,8 +80,9 @@ update_drawable_size :: proc(app: ^App) {
 	renderer_set_drawable_size(&app.renderer, f64(w) * f64(scale), f64(h) * f64(scale))
 }
 
+// Hover only affects the preview overlay, which re-uploads every frame,
+// so moving the mouse never triggers a full instance re-collect.
 update_hover :: proc(app: ^App, mx, my: i32) {
-	old_x, old_y, old_valid := app.hover_x, app.hover_y, app.hover_valid
 	app.hover_x, app.hover_y, app.hover_valid = camera_pick_cell(
 		app.camera,
 		f32(mx),
@@ -89,9 +90,6 @@ update_hover :: proc(app: ^App, mx, my: i32) {
 		app.screen_w,
 		app.screen_h,
 	)
-	if old_x != app.hover_x || old_y != app.hover_y || old_valid != app.hover_valid {
-		app.scene_dirty = true
-	}
 }
 
 handle_paint_at :: proc(app: ^App, mx, my: i32, toggle: bool) {
@@ -244,7 +242,6 @@ handle_key :: proc(app: ^App, key: SDL.Keycode, mods: SDL.Keymod) {
 		app.scene_dirty = true
 	case .TAB:
 		app.selected_pattern = pattern_next(app.selected_pattern, -1 if shift else 1)
-		app.scene_dirty = true
 	case .LEFTBRACKET:
 		app.selected_age = max(app.selected_age - 1, 0)
 		app.scene_dirty = true
@@ -261,7 +258,6 @@ handle_key :: proc(app: ^App, key: SDL.Keycode, mods: SDL.Keymod) {
 	case .F:
 		camera_reset(&app.camera)
 		update_hover(app, app.last_mx, app.last_my)
-		app.scene_dirty = true
 	case .V:
 		// Paste-ready snippet for camera_default in camera.odin.
 		fmt.printf(
@@ -293,6 +289,8 @@ run :: proc() {
 
 	app := new(App)
 	defer free(app)
+	app.instances = make([]Instance, MAX_INSTANCES)
+	defer delete(app.instances)
 	app.window = SDL.CreateWindow(
 		"zlife // living time sculpture",
 		SDL.WINDOWPOS_CENTERED,
@@ -330,7 +328,7 @@ run :: proc() {
 	app.hud_mode = .Minimal
 	app.scene_dirty = true
 	app.tick_hz = DEFAULT_TICK_HZ
-	app.selected_pattern = .Glider_Fleet
+	app.selected_pattern = .Gosper_Gun
 	life_randomize(&app.life, u64(time.to_unix_nanoseconds(time.now())))
 
 	update_drawable_size(app)
@@ -353,7 +351,6 @@ run :: proc() {
 				#partial switch e.window.event {
 				case .SIZE_CHANGED, .RESIZED, .RESTORED, .MINIMIZED:
 					update_drawable_size(app)
-					app.scene_dirty = true
 				}
 			case .KEYDOWN:
 				if e.key.repeat == 0 {
@@ -387,18 +384,15 @@ run :: proc() {
 				if e.button.button == SDL.BUTTON_MIDDLE do app.panning = false
 				if e.button.button == SDL.BUTTON_LEFT do app.painting = false
 				update_hover(app, e.button.x, e.button.y)
-				app.scene_dirty = true
 			case .MOUSEMOTION:
 				dx := e.motion.x - app.last_mx
 				dy := e.motion.y - app.last_my
 				if app.orbiting {
 					camera_orbit(&app.camera, f32(dx) * 0.005, f32(dy) * 0.005)
 					update_hover(app, e.motion.x, e.motion.y)
-					app.scene_dirty = true
 				} else if app.panning {
 					camera_pan(&app.camera, f32(dx), f32(dy))
 					update_hover(app, e.motion.x, e.motion.y)
-					app.scene_dirty = true
 				} else if app.painting {
 					handle_paint_at(app, e.motion.x, e.motion.y, false)
 				} else {
@@ -408,7 +402,6 @@ run :: proc() {
 			case .MOUSEWHEEL:
 				camera_zoom(&app.camera, f32(e.wheel.y))
 				update_hover(app, app.last_mx, app.last_my)
-				app.scene_dirty = true
 			}
 		}
 
@@ -458,49 +451,50 @@ run :: proc() {
 			continue
 		}
 
-		pattern_preview_active := app.hover_valid &&
+		app.pattern_preview_active = app.hover_valid &&
 			!app.painting &&
 			SDL.GetModState() & SDL.KMOD_SHIFT != {}
-		if pattern_preview_active != app.pattern_preview_active {
-			app.pattern_preview_active = pattern_preview_active
-			app.scene_dirty = true
-		}
 
+		// The full collect only runs when the sim state changed (step,
+		// paint, scrub, isolate...). Camera motion and hover just re-render
+		// the cached instance buffer.
 		upload_instances := app.scene_dirty
 		if upload_instances {
 			app.instance_count = life_collect_instances(
 				&app.life,
-				app.instances[:],
+				app.instances,
 				app.selected_age,
 				app.isolate_selected,
 			)
-			app.preview_count = 0
-			if app.hover_valid && !app.orbiting && !app.panning {
-				preview_cells: [64][2]int
-				cell_count := 1
-				preview_cells[0] = {app.hover_x, app.hover_y}
-				if app.pattern_preview_active {
-					cell_count = pattern_collect_points(
-						app.selected_pattern,
-						app.hover_x,
-						app.hover_y,
-						preview_cells[:],
-					)
+		}
+
+		// Hover/pattern preview is tiny and re-uploads every frame.
+		app.preview_count = 0
+		if app.hover_valid && !app.orbiting && !app.panning {
+			preview_cells: [64][2]int
+			cell_count := 1
+			preview_cells[0] = {app.hover_x, app.hover_y}
+			if app.pattern_preview_active {
+				cell_count = pattern_collect_points(
+					app.selected_pattern,
+					app.hover_x,
+					app.hover_y,
+					preview_cells[:],
+				)
+			}
+			for cell in preview_cells[:cell_count] {
+				app.preview_instances[app.preview_count] = Instance{
+					center = {
+						f32(cell.x) - f32(GRID) * 0.5 + 0.5,
+						0,
+						f32(cell.y) - f32(GRID) * 0.5 + 0.5,
+					},
+					age = 0,
+					scale = 1.0,
+					glow = 2,
+					sun = 1,
 				}
-				for cell in preview_cells[:cell_count] {
-					app.preview_instances[app.preview_count] = Instance{
-						center = {
-							f32(cell.x) - f32(GRID) * 0.5 + 0.5,
-							0,
-							f32(cell.y) - f32(GRID) * 0.5 + 0.5,
-						},
-						age = 0,
-						scale = 1.0,
-						glow = 2,
-						sun = 1,
-					}
-					app.preview_count += 1
-				}
+				app.preview_count += 1
 			}
 		}
 

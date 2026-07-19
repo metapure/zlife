@@ -4,7 +4,7 @@ import "core:testing"
 
 @(test)
 test_life_b3_s23 :: proc(t: ^testing.T) {
-	// Life is ~300 KB with the 128-deep ring buffer; keep it off the stack.
+	// Life is ~67 MB with the 1024-deep ring buffer; keep it off the stack.
 	life := new(Life)
 	defer free(life)
 	life_clear(life)
@@ -157,7 +157,7 @@ test_pattern_load_and_paint_metadata :: proc(t: ^testing.T) {
 
 @(test)
 test_curated_pattern_sizes :: proc(t: ^testing.T) {
-	expected := [?]int{25, 48, 5, 7, 7}
+	expected := [?]int{36, 5, 7, 9, 13, 10, 22}
 	life := new(Life)
 	defer free(life)
 	for kind_index in 0 ..< PATTERN_COUNT {

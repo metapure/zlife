@@ -3,9 +3,9 @@
 A living sculpture of Conway's Game of Life, built with **Odin + Metal** for
 macOS.
 
-This is regular, toroidal B3/S23 Life on a 96×96 grid. The third axis is not
+This is regular, toroidal B3/S23 Life on a 256×256 grid. The third axis is not
 another simulation dimension: **time flows downward**. The searing red plane
-on top is the present; up to 255 earlier generations hang beneath it as a
+on top is the present; up to 1023 earlier generations hang beneath it as a
 wall of emissive voxels burning from magenta through crimson into ember red
 and finally dissolving into black, with no gaps in space or time. The tower
 glides downward continuously between generations instead of stepping.
@@ -32,7 +32,7 @@ The scene includes:
 - an editing grid that appears only while the cursor is over the present plane
 - full-history and isolated-slice views
 - direct painting with a bright cyan hover preview
-- five curated pattern presets
+- seven curated pattern presets: guns, methuselahs, and puffers
 - a minimal bitmap HUD in Cyberpunk yellow and red that expands to full
   statistics on demand
 
@@ -106,7 +106,10 @@ detected period and how many soups have been injected. Manual stepping with
 - **U** — cycle the HUD: minimal, full statistics, hidden
 - **Esc** — quit
 
-Included patterns are Glider Fleet, Pulsar, R-pentomino, Acorn, and Diehard.
+Included patterns are chosen for long, self-sustaining evolutions: Gosper Gun
+(infinite glider stream), R-pentomino (1103 generations), Acorn (5206),
+Rabbits (17331), Lidka (29055), Switch Engine (minimal 10-cell infinite
+growth), and Puffer Train (an eternal c/2 engine with a dirty debris trail).
 
 Starts **paused** with a random seed so you can paint before pressing Space.
 

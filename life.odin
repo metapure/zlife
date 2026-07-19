@@ -1,9 +1,17 @@
 package main
 
 import "core:math"
+import "core:os"
+import "core:thread"
 
-GRID :: 96
-DEPTH :: 256
+GRID :: 256
+DEPTH :: 1024
+
+// Worst-case instance storage for the full volume would be ~2 GB, so the
+// CPU and GPU buffers are capped at a realistic density instead (~12% of
+// the volume, ~3x the steady-state density of Life). Collection truncates
+// gracefully if the cap is ever hit.
+MAX_INSTANCES :: 8_000_000
 
 // Toward-the-sun direction in world space (x, y-up, z), normalized.
 // Must match sun_dir in shaders.metal. Mostly lateral so columns cast long
@@ -158,7 +166,7 @@ life_step :: proc(life: ^Life) {
 	life.live_count = next_live_count
 }
 
-SOUP_SIZE :: 12
+SOUP_SIZE :: 20
 SOUP_FILL :: f32(0.35)
 
 // Break a detected cycle by crashing fresh random soup into the present:
@@ -243,15 +251,181 @@ life_sun_visibility :: proc(
 	return vis
 }
 
+MAX_COLLECT_WORKERS :: 12
+
+@(private)
+Collect_Shared :: struct {
+	layers:       []^[GRID][GRID]u8,
+	steps:        []Shadow_Step,
+	out:          []Instance,
+	emit:         []int, // per-layer live count, clamped to remaining capacity
+	offsets:      []int, // per-layer start index into out
+	selected_age: int,
+	worker_count: int,
+}
+
+@(private)
+Collect_Worker :: struct {
+	shared: ^Collect_Shared,
+	index:  int,
+}
+
+// Layers are interleaved across workers (z % worker_count) so the denser
+// recent layers spread evenly instead of piling onto one worker.
+@(private)
+collect_count_worker :: proc(w: ^Collect_Worker) {
+	s := w.shared
+	for z := w.index; z < len(s.layers); z += s.worker_count {
+		layer := s.layers[z]
+		n := 0
+		for y in 0 ..< GRID {
+			for x in 0 ..< GRID {
+				n += int(layer[y][x])
+			}
+		}
+		s.emit[z] = n
+	}
+}
+
+@(private)
+collect_fill_worker :: proc(w: ^Collect_Worker) {
+	s := w.shared
+	for z := w.index; z < len(s.layers); z += s.worker_count {
+		if s.emit[z] > 0 {
+			collect_fill_layer(s, z)
+		}
+	}
+}
+
+@(private)
+collect_fill_layer :: proc(s: ^Collect_Shared, z: int) {
+	layer := s.layers[z]
+	// Adjacent layers in time shadow this cell from above and below.
+	above, below: ^[GRID][GRID]u8
+	if z > 0 {
+		above = s.layers[z - 1]
+	}
+	if z < len(s.layers) - 1 {
+		below = s.layers[z + 1]
+	}
+	age := f32(z) / f32(max(DEPTH - 1, 1))
+	half := f32(GRID) * 0.5
+	out := s.out[s.offsets[z]:][:s.emit[z]]
+	count := 0
+	for y in 0 ..< GRID {
+		for x in 0 ..< GRID {
+			if layer[y][x] == 0 {
+				continue
+			}
+			if count >= len(out) {
+				return
+			}
+			// Face-neighbor occupancy, non-wrapping: the sculpture
+			// visually ends at the grid edges.
+			occupied := 0
+			if x > 0 && layer[y][x - 1] != 0 do occupied += 1
+			if x < GRID - 1 && layer[y][x + 1] != 0 do occupied += 1
+			if y > 0 && layer[y - 1][x] != 0 do occupied += 1
+			if y < GRID - 1 && layer[y + 1][x] != 0 do occupied += 1
+			if above != nil && above[y][x] != 0 do occupied += 1
+			if below != nil && below[y][x] != 0 do occupied += 1
+
+			sun := life_sun_visibility(s.layers, s.steps, x, y, z)
+
+			// Time flows downward: the present sits at y = 0, history below it.
+			out[count] = Instance {
+				center = {
+					f32(x) - half + 0.5,
+					-f32(z),
+					f32(y) - half + 0.5,
+				},
+				age       = age,
+				scale     = 1.0,
+				glow      = 1.0 if z == 0 else (0.35 if z == s.selected_age else 0.0),
+				occlusion = f32(occupied) / 6.0,
+				sun       = sun,
+			}
+			count += 1
+		}
+	}
+}
+
+// Run one phase across the workers. Worker 0 runs on the calling thread;
+// the rest are spawned and joined. Collection only runs when the sim
+// actually changed (tick rate, not frame rate), so spawn cost is noise
+// next to the shadow-march work.
+@(private)
+collect_run_workers :: proc(
+	shared: ^Collect_Shared,
+	worker_proc: proc(w: ^Collect_Worker),
+) {
+	workers: [MAX_COLLECT_WORKERS]Collect_Worker
+	threads: [MAX_COLLECT_WORKERS]^thread.Thread
+	n := shared.worker_count
+	for i in 0 ..< n {
+		workers[i] = Collect_Worker{shared = shared, index = i}
+	}
+	for i in 1 ..< n {
+		threads[i] = thread.create_and_start_with_poly_data(&workers[i], worker_proc)
+	}
+	worker_proc(&workers[0])
+	for i in 1 ..< n {
+		thread.destroy(threads[i]) // waits for the thread to finish, then frees it
+	}
+}
+
+// An isolated slice floats alone in space: no above/below occlusion and
+// nothing shadows it, so the volume machinery is skipped entirely.
+@(private)
+life_collect_isolated :: proc(life: ^Life, out: []Instance, selected_age: int) -> int {
+	layer := life_layer_at_age(life, selected_age)
+	if layer == nil {
+		return 0
+	}
+	age := f32(selected_age) / f32(max(DEPTH - 1, 1))
+	half := f32(GRID) * 0.5
+	count := 0
+	for y in 0 ..< GRID {
+		for x in 0 ..< GRID {
+			if layer[y][x] == 0 {
+				continue
+			}
+			if count >= len(out) {
+				return count
+			}
+			occupied := 0
+			if x > 0 && layer[y][x - 1] != 0 do occupied += 1
+			if x < GRID - 1 && layer[y][x + 1] != 0 do occupied += 1
+			if y > 0 && layer[y - 1][x] != 0 do occupied += 1
+			if y < GRID - 1 && layer[y + 1][x] != 0 do occupied += 1
+
+			out[count] = Instance {
+				center = {
+					f32(x) - half + 0.5,
+					-f32(selected_age),
+					f32(y) - half + 0.5,
+				},
+				age       = age,
+				scale     = 1.0,
+				glow      = 1.0 if selected_age == 0 else 0.35,
+				occlusion = f32(occupied) / 6.0,
+				sun       = 1.0,
+			}
+			count += 1
+		}
+	}
+	return count
+}
+
 life_collect_instances :: proc(
 	life: ^Life,
 	out: []Instance,
 	selected_age: int = 0,
 	isolate_selected: bool = false,
 ) -> int {
-	count := 0
-	half_w := f32(GRID) * 0.5
-	half_h := f32(GRID) * 0.5
+	if isolate_selected {
+		return life_collect_isolated(life, out, selected_age)
+	}
 
 	// Resolve the ring buffer once so the shadow march can index layers
 	// directly by age instead of doing modular arithmetic per step.
@@ -262,62 +436,35 @@ life_collect_instances :: proc(
 	layers := layer_ptrs[:life.history_count]
 	shadow_steps := shadow_steps_build()
 
-	for z in 0 ..< life.history_count {
-		if isolate_selected && z != selected_age {
-			continue
-		}
-		layer := life_layer_at_age(life, z)
-		// Adjacent layers in time shadow this cell from above and below.
-		above, below: ^[GRID][GRID]u8
-		if !isolate_selected {
-			if z > 0 {
-				above = life_layer_at_age(life, z - 1)
-			}
-			if z < life.history_count - 1 {
-				below = life_layer_at_age(life, z + 1)
-			}
-		}
-		age := f32(z) / f32(max(DEPTH - 1, 1))
-		for y in 0 ..< GRID {
-			for x in 0 ..< GRID {
-				if layer[y][x] == 0 {
-					continue
-				}
-				if count >= len(out) {
-					return count
-				}
-				// Face-neighbor occupancy, non-wrapping: the sculpture
-				// visually ends at the grid edges.
-				occupied := 0
-				if x > 0 && layer[y][x - 1] != 0 do occupied += 1
-				if x < GRID - 1 && layer[y][x + 1] != 0 do occupied += 1
-				if y > 0 && layer[y - 1][x] != 0 do occupied += 1
-				if y < GRID - 1 && layer[y + 1][x] != 0 do occupied += 1
-				if above != nil && above[y][x] != 0 do occupied += 1
-				if below != nil && below[y][x] != 0 do occupied += 1
-
-				// An isolated slice floats alone in space; nothing shadows it.
-				sun := f32(1.0)
-				if !isolate_selected {
-					sun = life_sun_visibility(layers, shadow_steps[:], x, y, z)
-				}
-
-				// Time flows downward: the present sits at y = 0, history below it.
-				out[count] = Instance {
-					center = {
-						f32(x) - half_w + 0.5,
-						-f32(z),
-						f32(y) - half_h + 0.5,
-					},
-					age       = age,
-					scale     = 1.0,
-					glow      = 1.0 if z == 0 else (0.35 if z == selected_age else 0.0),
-					occlusion = f32(occupied) / 6.0,
-					sun       = sun,
-				}
-				count += 1
-			}
-		}
+	emit, offsets: [DEPTH]int
+	shared := Collect_Shared {
+		layers       = layers,
+		steps        = shadow_steps[:],
+		out          = out,
+		emit         = emit[:life.history_count],
+		offsets      = offsets[:life.history_count],
+		selected_age = selected_age,
+		worker_count = clamp(
+			min(os.get_processor_core_count(), life.history_count),
+			1,
+			MAX_COLLECT_WORKERS,
+		),
 	}
-	return count
+
+	// Phase 1 (parallel): live cells per layer.
+	collect_run_workers(&shared, collect_count_worker)
+
+	// Phase 2 (serial): prefix-sum offsets, clamped at capacity so each
+	// layer writes a disjoint range. Output order stays z, then y, then x,
+	// identical to the old serial scan.
+	total := 0
+	for z in 0 ..< life.history_count {
+		offsets[z] = total
+		emit[z] = min(emit[z], max(len(out) - total, 0))
+		total += emit[z]
+	}
+
+	// Phase 3 (parallel): occupancy, shadow march, and instance write-out.
+	collect_run_workers(&shared, collect_fill_worker)
+	return total
 }
