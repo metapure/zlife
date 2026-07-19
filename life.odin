@@ -17,6 +17,10 @@ DEFAULT_SEED :: u64(0x5A17_1FE5_D00D_BAAD)
 
 Life :: struct {
 	layers: [DEPTH][GRID][GRID]u8,
+	// Blackwall corruption per cell, ring-aligned with layers. 255 = a cell
+	// that just breached through the wall; descendants inherit a decayed
+	// dose, so infections spread with the cells and cool back to zero.
+	corruption: [DEPTH][GRID][GRID]u8,
 	layer_hashes: [DEPTH]u64, // ring-aligned with layers
 	head: int,
 	history_count: int,
@@ -116,7 +120,9 @@ life_layer_hash :: proc(layer: ^[GRID][GRID]u8) -> u64 {
 
 life_step :: proc(life: ^Life) {
 	next: [GRID][GRID]u8
+	next_corruption: [GRID][GRID]u8
 	cur := &life.layers[life.head]
+	cur_corruption := &life.corruption[life.head]
 	next_live_count := 0
 
 	// Painting edits the head layer in place, so its cached hash may be stale.
@@ -132,6 +138,21 @@ life_step :: proc(life: ^Life) {
 				next[y][x] = 1 if neighbors == 3 else 0
 			}
 			next_live_count += int(next[y][x])
+
+			// A surviving or newborn cell catches the strongest corruption
+			// in its 3x3 neighborhood, decayed one notch, so the infection
+			// travels with the population and fades over ~20 generations.
+			if next[y][x] != 0 {
+				strongest := u8(0)
+				for dy in -1 ..= 1 {
+					for dx in -1 ..= 1 {
+						nx := (x + dx + GRID) % GRID
+						ny := (y + dy + GRID) % GRID
+						strongest = max(strongest, cur_corruption[ny][nx])
+					}
+				}
+				next_corruption[y][x] = u8((int(strongest) * CORRUPTION_DECAY_NUM) >> 8)
+			}
 		}
 	}
 
@@ -152,6 +173,7 @@ life_step :: proc(life: ^Life) {
 	// Move the head backward and overwrite only the expired oldest layer.
 	life.head = (life.head + DEPTH - 1) % DEPTH
 	life.layers[life.head] = next
+	life.corruption[life.head] = next_corruption
 	life.layer_hashes[life.head] = next_hash
 	life.history_count = min(life.history_count + 1, DEPTH)
 	life.generation += 1
@@ -160,15 +182,24 @@ life_step :: proc(life: ^Life) {
 
 SOUP_SIZE :: 12
 SOUP_FILL :: f32(0.35)
+// Per-generation corruption decay as a /256 fixed-point factor (~0.90),
+// so a breach cools from 255 to nothing in roughly 20 generations.
+CORRUPTION_DECAY_NUM :: 230
 
-// Break a detected cycle by crashing fresh random soup into the present:
-// 2-3 small patches at random locations, OR-ed over the existing cells.
-life_inject_soup :: proc(life: ^Life) {
+// Break a detected cycle by letting something crash through the weakened
+// wall: 2-3 small random soup patches, OR-ed over the existing cells and
+// marked fully corrupted. Returns the grid coordinates of the first patch
+// so the app can stage the breach shockwave there.
+life_inject_soup :: proc(life: ^Life) -> (breach_x, breach_y: int) {
 	head := &life.layers[life.head]
+	head_corruption := &life.corruption[life.head]
 	patch_count := 2 + int(life_random_u64(&life.rng) & 1)
-	for _ in 0 ..< patch_count {
+	for patch in 0 ..< patch_count {
 		cx := int(life_random_u64(&life.rng) % GRID)
 		cy := int(life_random_u64(&life.rng) % GRID)
+		if patch == 0 {
+			breach_x, breach_y = cx, cy
+		}
 		for dy in 0 ..< SOUP_SIZE {
 			for dx in 0 ..< SOUP_SIZE {
 				sample := f32(life_random_u64(&life.rng) >> 40) / f32(1 << 24)
@@ -182,12 +213,14 @@ life_inject_soup :: proc(life: ^Life) {
 					head[y][x] = 1
 					life.live_count += 1
 				}
+				head_corruption[y][x] = 255
 			}
 		}
 	}
 	life.injection_count += 1
 	life.cycle_period = 0
 	// The head hash is now stale; life_step recomputes it before comparing.
+	return breach_x, breach_y
 }
 
 Shadow_Step :: struct {
@@ -278,6 +311,7 @@ life_collect_instances :: proc(
 			}
 		}
 		age := f32(z) / f32(max(DEPTH - 1, 1))
+		layer_corruption := &life.corruption[(life.head + z) % DEPTH]
 		for y in 0 ..< GRID {
 			for x in 0 ..< GRID {
 				if layer[y][x] == 0 {
@@ -309,11 +343,12 @@ life_collect_instances :: proc(
 						-f32(z),
 						f32(y) - half_h + 0.5,
 					},
-					age       = age,
-					scale     = 1.0,
-					glow      = 1.0 if z == 0 else (0.35 if z == selected_age else 0.0),
-					occlusion = f32(occupied) / 6.0,
-					sun       = sun,
+					age        = age,
+					scale      = 1.0,
+					glow       = 1.0 if z == 0 else (0.35 if z == selected_age else 0.0),
+					occlusion  = f32(occupied) / 6.0,
+					sun        = sun,
+					corruption = f32(layer_corruption[y][x]) / 255.0,
 				}
 				count += 1
 			}

@@ -142,6 +142,61 @@ test_inject_soup :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_breach_corruption_spreads_and_decays :: proc(t: ^testing.T) {
+	life := new(Life)
+	defer free(life)
+	life_clear(life)
+	life.rng = 7
+
+	life_inject_soup(life)
+
+	// Every injected patch cell is marked fully corrupted.
+	max_corruption := u8(0)
+	for y in 0 ..< GRID {
+		for x in 0 ..< GRID {
+			max_corruption = max(max_corruption, life.corruption[life.head][y][x])
+		}
+	}
+	testing.expect_value(t, max_corruption, u8(255))
+
+	// Descendants inherit a strictly decayed dose while cells survive.
+	life_step(life)
+	next_max := u8(0)
+	live_corrupted := 0
+	head := &life.layers[life.head]
+	head_corruption := &life.corruption[life.head]
+	for y in 0 ..< GRID {
+		for x in 0 ..< GRID {
+			c := head_corruption[y][x]
+			next_max = max(next_max, c)
+			if head[y][x] != 0 && c > 0 {
+				live_corrupted += 1
+			}
+		}
+	}
+	if life.live_count > 0 {
+		testing.expect(t, live_corrupted > 0)
+		testing.expect(t, next_max > 0)
+	}
+	testing.expect(t, next_max < 255)
+	testing.expect_value(t, next_max, u8((255 * CORRUPTION_DECAY_NUM) >> 8))
+
+	// The infection eventually cools back to nothing: the wall heals.
+	for _ in 0 ..< 64 {
+		life_step(life)
+	}
+	healed := true
+	for y in 0 ..< GRID {
+		for x in 0 ..< GRID {
+			if life.corruption[life.head][y][x] != 0 {
+				healed = false
+			}
+		}
+	}
+	testing.expect(t, healed)
+}
+
+@(test)
 test_pattern_load_and_paint_metadata :: proc(t: ^testing.T) {
 	life := new(Life)
 	defer free(life)

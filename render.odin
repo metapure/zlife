@@ -14,6 +14,7 @@ Instance :: struct {
 	glow: f32,
 	occlusion: f32,
 	sun: f32, // 0..1 ray-marched visibility toward the sun
+	corruption: f32, // 0..1 breach infection carried over from the simulation
 }
 
 Uniforms :: struct {
@@ -21,6 +22,7 @@ Uniforms :: struct {
 	params: [4]f32,
 	resolution: [4]f32,
 	eye: [4]f32,
+	breach: [4]f32, // xyz = world-space breach center, w = breach start time
 }
 
 Vertex :: struct {
@@ -420,6 +422,7 @@ renderer_draw :: proc(
 	eye: [3]f32,
 	elapsed: f32,
 	tick_phase: f32,
+	breach: [4]f32,
 	selected_age: int,
 	show_editing_grid: bool,
 	previews: []Instance,
@@ -453,6 +456,7 @@ renderer_draw :: proc(
 	uniforms[0].params = {elapsed, f32(selected_age), f32(DEPTH), tick_phase}
 	uniforms[0].resolution = {f32(r.depth_w), f32(r.depth_h), 0, 0}
 	uniforms[0].eye = {eye.x, eye.y, eye.z, 0}
+	uniforms[0].breach = breach
 
 	ui_count := min(len(ui_vertices), UI_MAX_VERTICES)
 	if ui_count > 0 {

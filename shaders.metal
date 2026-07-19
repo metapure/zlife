@@ -12,6 +12,7 @@ struct Instance {
 	float glow;
 	float occlusion;
 	float sun; // 0..1 ray-marched visibility toward the sun
+	float corruption; // 0..1 breach infection carried over from the simulation
 };
 
 struct Uniforms {
@@ -19,6 +20,7 @@ struct Uniforms {
 	float4 params;     // time, selected age, history depth, tick phase (-1 when paused)
 	float4 resolution; // drawable width, height, unused, unused
 	float4 eye;        // camera world position
+	float4 breach;     // xyz = world-space breach center, w = breach start time
 };
 
 struct V2F {
@@ -33,6 +35,7 @@ struct V2F {
 	float hash;  // stable per-voxel random
 	float shaft; // 0..1 membership in the current cyan data-shaft columns
 	float spark; // 0..1 sparse residual per-cell sparkle
+	float corruption; // 0..1 breach infection
 };
 
 static float hash11(float p) {
@@ -76,12 +79,30 @@ vertex V2F vertex_main(
 			float grow = smoothstep(0.0, 0.3, phase);
 			scale *= mix(0.6, 1.0, grow);
 		}
+		// Breach shockwave: for ~2 s after something punches through the
+		// wall, a damped ring races outward from the impact point and
+		// shoves voxels radially as it passes.
+		float bt = time - uniforms.breach.w;
+		float shock = 0.0;
+		if (bt >= 0.0 && bt < 2.0) {
+			float3 d = center - uniforms.breach.xyz;
+			float r = length(d);
+			float ring = 26.0 * bt;
+			float band = exp(-pow((r - ring) / 4.0, 2.0));
+			shock = band * exp(-bt * 1.8);
+			if (r > 0.001) {
+				center += (d / r) * 1.6 * shock;
+			}
+		}
 		// Rare time-hashed glitch streaks: a voxel briefly stretches into a
 		// vertical smear and shears sideways, like data tearing on the wall.
+		// The shockwave locally lowers the threshold, so glitches erupt in
+		// the breach zone.
 		float gslot = floor(time * 7.0);
 		float g = hash13(center + gslot * 11.17);
-		if (g > 0.99) {
-			float k = (g - 0.99) * 100.0;
+		float gate = mix(0.99, 0.90, saturate(shock));
+		if (g > gate) {
+			float k = (g - gate) / (1.0 - gate);
 			scale.y *= 1.0 + 2.5 * k;
 			center.x += (fract(g * 149.31) - 0.5) * 0.5 * k;
 		}
@@ -100,6 +121,7 @@ vertex V2F vertex_main(
 	out.sun       = i.sun;
 	out.pulse     = 1.0 + 0.06 * sin(time * 2.1);
 	out.hash      = hash13(i.center * 0.371);
+	out.corruption = i.corruption;
 
 	// Cyan data-shafts: rare full-height columns (hash on xz only) burn
 	// cold blue top to bottom. The selection migrates slowly, crossfading
@@ -184,6 +206,24 @@ fragment float4 fragment_main(
 		cyan * shade * (0.65 + 0.35 * sin(time * 17.0 + in.hash * 40.0)),
 		sparkle
 	);
+
+	// Breach infection: cells that came through the wall (or descend from
+	// ones that did) burn cold. Fresh corruption is white-hot, mid values
+	// sit at the shaft cyan, and faint traces just tint the red; because
+	// corruption decays per generation, each breach reads as a cyan wound
+	// sinking down the timeline as the wall heals.
+	float corr = saturate(in.corruption);
+	if (corr > 0.0) {
+		float3 infect = mix(
+			float3(0.10, 2.00, 2.15),
+			float3(2.40, 2.90, 3.00),
+			smoothstep(0.55, 1.0, corr)
+		);
+		// Infected cells flicker faster and harder than the ambient
+		// data-flicker: the wall is fighting them.
+		float infect_flick = 0.62 + 0.38 * sin(time * 21.0 + in.hash * 80.0);
+		emission = mix(emission, infect * shade * infect_flick, smoothstep(0.0, 0.45, corr));
+	}
 
 	if (age < 0.001) {
 		// Present layer breathes and burns hottest.
@@ -329,9 +369,15 @@ fragment float4 composite_fragment(
 	float time = uniforms.params.x;
 	float2 uv = in.uv;
 
+	// Breach panic: for ~1.5 s after the wall is hit, the whole lens
+	// flinches — glitch displacement and chromatic aberration spike hard,
+	// then ease out.
+	float bt = time - uniforms.breach.w;
+	float panic = bt >= 0.0 ? exp(-bt * 2.2) : 0.0;
+
 	// Occasional glitch bursts displace horizontal bands of the frame.
 	float burst = hash11(floor(time * 1.9) * 0.713);
-	float glitch = smoothstep(0.90, 1.0, burst);
+	float glitch = max(smoothstep(0.90, 1.0, burst), panic);
 	if (glitch > 0.0) {
 		float band = floor(uv.y * 36.0);
 		float bh = hash11(band * 7.13 + floor(time * 23.0) * 3.1);
@@ -340,9 +386,10 @@ fragment float4 composite_fragment(
 	}
 
 	// Radial chromatic aberration, red and blue pulled apart; kept subtle
-	// at rest so the frame stays sharp, spiking during glitch bursts.
+	// at rest so the frame stays sharp, spiking during glitch bursts and
+	// harder still while the breach panic rings.
 	float2 dir = uv - 0.5;
-	float ca = 0.0012 + 0.010 * glitch;
+	float ca = 0.0012 + 0.010 * glitch + 0.012 * panic;
 	float3 color;
 	color.r = scene.sample(post_sampler, uv + dir * ca).r;
 	color.g = scene.sample(post_sampler, uv).g;

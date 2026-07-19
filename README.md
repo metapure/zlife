@@ -24,6 +24,13 @@ The scene includes:
   brightness scroll running down them, plus sparse cyan sparkles and
   per-voxel data flicker
 - rare glitch streaks that briefly smear individual voxels vertically
+- breach events: when the simulation stagnates, something punches through
+  the wall — a radial shockwave ripples out from the impact point, the lens
+  flinches with a hard glitch/aberration spike, the HUD flashes a cyan
+  BLACKWALL BREACH warning, and the intruding cells arrive fully corrupted
+- an inherited corruption field: cells born next to corrupted cells catch a
+  decayed dose, so each breach becomes a cyan-white infection that spreads
+  with the population and sinks down the timeline as the wall heals red
 - an HDR post pipeline: bloom, chromatic aberration, scanlines, glitch band
   displacement, vignette, and film grain over a pure black background
 - per-voxel ambient occlusion and a ray-marched shading term that keep the
@@ -108,10 +115,14 @@ fades in only while the cursor is over the present plane.
 While running, the simulation watches for stagnation: Life is deterministic,
 so if a generation exactly matches any of the up-to-255 stored earlier
 generations, the world would repeat forever (still lifes, oscillators, or
-extinction). When that happens, a few small random soup patches are crashed
-into the present layer to keep the sculpture evolving. The full HUD shows the
-detected period and how many soups have been injected. Manual stepping with
-**N** detects cycles but never injects.
+extinction). Stagnation is weakness, and when the wall weakens, something
+punches through from the other side: a few small random soup patches breach
+into the present layer, fully corrupted, with a shockwave, a lens flinch,
+and a flashing HUD warning. The corruption is inherited by descendants with
+per-generation decay, so every breach leaves a cyan scar that spreads,
+sinks down the history wall, and fades as the wall heals. The full HUD
+shows the detected period and the breach count. Manual stepping with **N**
+detects cycles but never triggers a breach.
 
 ### Patterns and display
 

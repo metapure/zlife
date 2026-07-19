@@ -53,6 +53,8 @@ App :: struct {
 	selected_age: int,
 	selected_pattern: Pattern_Kind,
 	inject_cooldown: int,
+	breach_center: [3]f32,
+	breach_time: f64, // elapsed seconds at the last breach; far past when none
 	tick_hz: f64,
 	tick_accum: f64,
 	elapsed: f64,
@@ -122,6 +124,11 @@ build_hud :: proc(app: ^App) {
 	muted := [4]f32{0.42, 0.08, 0.06, 0.80}
 	status := "PAUSED" if app.paused else "RUNNING"
 
+	// For ~2 s after something punches through the wall, the headline is
+	// replaced by a flashing cyan breach warning.
+	breach_age := app.elapsed - app.breach_time
+	breach_flash := breach_age >= 0 && breach_age < 2.0 && math.mod(breach_age, 0.4) < 0.25
+
 	if app.hud_mode == .Minimal {
 		minimal_buffer: [128]u8
 		minimal := fmt.bprintf(
@@ -131,6 +138,9 @@ build_hud :: proc(app: ^App) {
 			app.life.generation,
 			app.life.live_count,
 		)
+		if breach_flash {
+			minimal = "// BLACKWALL BREACH //"
+		}
 		ui_text(
 			app.ui_vertices[:],
 			&app.ui_count,
@@ -140,7 +150,7 @@ build_hud :: proc(app: ^App) {
 			1.5,
 			app.screen_w,
 			app.screen_h,
-			muted,
+			accent if breach_flash else muted,
 		)
 		return
 	}
@@ -161,7 +171,7 @@ build_hud :: proc(app: ^App) {
 	cycle_label := "EVOLVING" if app.life.cycle_period == 0 else fmt.bprintf(cycle_buffer[:], "PERIOD %d", app.life.cycle_period)
 	line2 := fmt.bprintf(
 		line2_buffer[:],
-		"%.0f HZ // %.0f FPS // HISTORY %d/%d // %s // %s // SOUPS %d",
+		"%.0f HZ // %.0f FPS // HISTORY %d/%d // %s // %s // BREACHES %d",
 		app.tick_hz,
 		app.fps,
 		app.selected_age,
@@ -188,6 +198,9 @@ build_hud :: proc(app: ^App) {
 		app.camera.target.z,
 	)
 
+	if breach_flash {
+		line1 = "// BLACKWALL BREACH //"
+	}
 	ui_text(app.ui_vertices[:], &app.ui_count, line1, 18, 18, 2, app.screen_w, app.screen_h, accent)
 	ui_text(app.ui_vertices[:], &app.ui_count, line2, 18, 38, 2, app.screen_w, app.screen_h, primary)
 	ui_text(app.ui_vertices[:], &app.ui_count, line3, 18, 58, 2, app.screen_w, app.screen_h, primary)
@@ -363,6 +376,7 @@ run :: proc() {
 	app.hud_mode = .Hidden if app.wallpaper else .Minimal
 	app.scene_dirty = true
 	app.tick_hz = DEFAULT_TICK_HZ
+	app.breach_time = -1e9
 	app.selected_pattern = .Glider_Fleet
 	life_randomize(&app.life, u64(time.to_unix_nanoseconds(time.now())))
 
@@ -487,7 +501,15 @@ run :: proc() {
 				if app.inject_cooldown > 0 {
 					app.inject_cooldown -= 1
 				} else if app.life.cycle_period != 0 {
-					life_inject_soup(&app.life)
+					breach_x, breach_y := life_inject_soup(&app.life)
+					// Stage the breach shockwave at the first patch, on the
+					// present plane where the wall was punched through.
+					app.breach_center = {
+						f32(breach_x) - f32(GRID) * 0.5 + 0.5,
+						0,
+						f32(breach_y) - f32(GRID) * 0.5 + 0.5,
+					}
+					app.breach_time = app.elapsed
 					app.inject_cooldown = INJECT_COOLDOWN
 				}
 				app.tick_accum -= tick
@@ -562,6 +584,12 @@ run :: proc() {
 			camera_eye(app.camera),
 			f32(app.elapsed),
 			tick_phase,
+			{
+				app.breach_center.x,
+				app.breach_center.y,
+				app.breach_center.z,
+				f32(app.breach_time),
+			},
 			app.selected_age,
 			app.show_grid && app.hover_valid,
 			app.preview_instances[:app.preview_count],
