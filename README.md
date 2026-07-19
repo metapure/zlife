@@ -74,14 +74,13 @@ odin test .
 
 ```bash
 ./zlife --wallpaper   # or -w
-./zlife --wallpaper --fps 30
 ```
 
 Pins the sculpture to the desktop as a live wallpaper: a fullscreen
 borderless window at the desktop window level, behind the icons, on every
 Space, click-through, and hidden from the Dock and Cmd+Tab. The simulation
-starts running immediately with the HUD hidden, and the ambient camera
-drift takes over since no input reaches the window.
+starts running immediately with the HUD hidden, rendering at 30 FPS, and
+the ambient camera drift takes over since no input reaches the window.
 
 The wallpaper lives only as long as the process: run it from a terminal and
 stop it with **Ctrl+C** (or `kill`) there — keyboard shortcuts do not work in
@@ -107,7 +106,7 @@ fades in only while the cursor is over the present plane.
 
 - **Space** — pause or play
 - **N** — step one generation
-- **- / =** — halve or double simulation speed (1–64 Hz, default 8 Hz)
+- **- / =** — halve or double simulation speed (1–64 Hz, default 16 Hz)
 - **[ / ]** — scrub the highlighted historical slice
 - **H** — isolate the highlighted slice or restore the full volume
 - **R** — create a newly seeded random world
@@ -164,6 +163,6 @@ Starts **paused** with a random seed so you can paint before pressing Space.
   still steps discretely.
 - Voxel instance data is uploaded only when simulation, editing, selection, or
   preview state changes.
-- Rendering is paced at 60 FPS.
+- Rendering is paced at 60 FPS (30 FPS in `--wallpaper` mode).
 - The renderer reports Metal/shader failures and releases all resources it
   owns during shutdown.

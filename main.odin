@@ -9,15 +9,18 @@ import "core:math"
 import "core:os"
 import "core:time"
 
-DEFAULT_TICK_HZ :: 8.0
+DEFAULT_TICK_HZ :: 16.0
 // Generations to wait after a soup injection before injecting again, so a
 // patch that dies instantly doesn't trigger machine-gun reseeding.
 INJECT_COOLDOWN :: 16
 // Localized breaches pace slower: a mostly-settled world can hold many
-// stuck tiles at once, and one hit every ~8 s (at the default 8 Hz) keeps
+// stuck tiles at once, and one hit every ~16 s (at the default 16 Hz) keeps
 // the wall alive without turning it into a permanent firefight.
 LOCAL_INJECT_COOLDOWN :: 256
 TARGET_FRAME_TIME :: time.Second / 60
+// Wallpaper only needs enough headroom over the 16 Hz sim for the tower
+// glide and post glitches; 16 FPS would sample tick_phase ~once per generation.
+WALLPAPER_FRAME_TIME :: time.Second / 30
 IDLE_DRIFT_DELAY :: 5.0
 IDLE_DRIFT_EASE_IN :: 6.0
 
@@ -617,8 +620,9 @@ run :: proc() {
 		)
 		app.scene_dirty = false
 		frame_time := time.tick_diff(frame_start, time.tick_now())
-		if frame_time < TARGET_FRAME_TIME {
-			time.sleep(TARGET_FRAME_TIME - frame_time)
+		target := WALLPAPER_FRAME_TIME if app.wallpaper else TARGET_FRAME_TIME
+		if frame_time < target {
+			time.sleep(target - frame_time)
 		}
 	}
 }
