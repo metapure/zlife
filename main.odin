@@ -9,6 +9,9 @@ import "core:os"
 import "core:time"
 
 DEFAULT_TICK_HZ :: 8.0
+// Generations to wait after a soup injection before injecting again, so a
+// patch that dies instantly doesn't trigger machine-gun reseeding.
+INJECT_COOLDOWN :: 16
 TARGET_FRAME_TIME :: time.Second / 60
 IDLE_DRIFT_DELAY :: 5.0
 IDLE_DRIFT_EASE_IN :: 6.0
@@ -47,6 +50,7 @@ App :: struct {
 
 	selected_age: int,
 	selected_pattern: Pattern_Kind,
+	inject_cooldown: int,
 	tick_hz: f64,
 	tick_accum: f64,
 	elapsed: f64,
@@ -151,14 +155,18 @@ build_hud :: proc(app: ^App) {
 		app.life.generation,
 		app.life.live_count,
 	)
+	cycle_buffer: [32]u8
+	cycle_label := "EVOLVING" if app.life.cycle_period == 0 else fmt.bprintf(cycle_buffer[:], "PERIOD %d", app.life.cycle_period)
 	line2 := fmt.bprintf(
 		line2_buffer[:],
-		"%.0f HZ // %.0f FPS // HISTORY %d/%d // %s",
+		"%.0f HZ // %.0f FPS // HISTORY %d/%d // %s // %s // SOUPS %d",
 		app.tick_hz,
 		app.fps,
 		app.selected_age,
 		max(app.life.history_count - 1, 0),
 		mode,
+		cycle_label,
+		app.life.injection_count,
 	)
 	line3 := fmt.bprintf(
 		line3_buffer[:],
@@ -431,6 +439,14 @@ run :: proc() {
 			tick := 1.0 / app.tick_hz
 			for app.tick_accum >= tick {
 				life_step(&app.life)
+				// Auto-refresh only while running; manual N stepping
+				// detects cycles but never injects.
+				if app.inject_cooldown > 0 {
+					app.inject_cooldown -= 1
+				} else if app.life.cycle_period != 0 {
+					life_inject_soup(&app.life)
+					app.inject_cooldown = INJECT_COOLDOWN
+				}
 				app.tick_accum -= tick
 				app.scene_dirty = true
 			}

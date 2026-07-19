@@ -71,6 +71,77 @@ test_randomize_is_deterministic :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_cycle_detection :: proc(t: ^testing.T) {
+	life := new(Life)
+	defer free(life)
+
+	// Blinker: period 2.
+	life_clear(life)
+	life_paint(life, 23, 24, true)
+	life_paint(life, 24, 24, true)
+	life_paint(life, 25, 24, true)
+	life_step(life)
+	testing.expect_value(t, life.cycle_period, 0) // no history to match yet
+	life_step(life)
+	testing.expect_value(t, life.cycle_period, 2)
+
+	// Block: period 1.
+	life_clear(life)
+	life_paint(life, 10, 10, true)
+	life_paint(life, 11, 10, true)
+	life_paint(life, 10, 11, true)
+	life_paint(life, 11, 11, true)
+	life_step(life)
+	testing.expect_value(t, life.cycle_period, 1)
+
+	// Empty world: extinction reads as period 1.
+	life_clear(life)
+	life_step(life)
+	testing.expect_value(t, life.cycle_period, 1)
+
+	// R-pentomino is still growing after a few steps: no cycle.
+	life_clear(life)
+	pattern_load(life, .R_Pentomino)
+	for _ in 0 ..< 8 {
+		life_step(life)
+		testing.expect_value(t, life.cycle_period, 0)
+	}
+}
+
+@(test)
+test_inject_soup :: proc(t: ^testing.T) {
+	a := new(Life)
+	b := new(Life)
+	defer free(a)
+	defer free(b)
+
+	life_clear(a)
+	life_clear(b)
+	a.rng = 7
+	b.rng = 7
+
+	life_inject_soup(a)
+	testing.expect(t, a.live_count > 0)
+	testing.expect_value(t, a.injection_count, u64(1))
+	testing.expect_value(t, a.cycle_period, 0)
+
+	// live_count stays consistent with the actual grid contents.
+	counted := 0
+	layer := life_layer_at_age(a, 0)
+	for y in 0 ..< GRID {
+		for x in 0 ..< GRID {
+			counted += int(layer[y][x])
+		}
+	}
+	testing.expect_value(t, a.live_count, counted)
+
+	// Deterministic for a fixed rng seed.
+	life_inject_soup(b)
+	testing.expect_value(t, a.layers[a.head], b.layers[b.head])
+	testing.expect_value(t, a.live_count, b.live_count)
+}
+
+@(test)
 test_pattern_load_and_paint_metadata :: proc(t: ^testing.T) {
 	life := new(Life)
 	defer free(life)

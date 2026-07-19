@@ -32,6 +32,7 @@ The scene includes:
 
 ```bash
 odin run . -out:zlife
+odin run . -out:zlife -o:aggressive
 ```
 
 Or:
@@ -72,6 +73,14 @@ fades in only while the cursor is over the present plane.
 - **H** — isolate the highlighted slice or restore the full volume
 - **R** — create a newly seeded random world
 - **C** — clear the timeline
+
+While running, the simulation watches for stagnation: Life is deterministic,
+so if a generation exactly matches any of the up-to-255 stored earlier
+generations, the world would repeat forever (still lifes, oscillators, or
+extinction). When that happens, a few small random soup patches are crashed
+into the present layer to keep the sculpture evolving. The full HUD shows the
+detected period and how many soups have been injected. Manual stepping with
+**N** detects cycles but never injects.
 
 ### Patterns and display
 

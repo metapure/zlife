@@ -17,16 +17,21 @@ DEFAULT_SEED :: u64(0x5A17_1FE5_D00D_BAAD)
 
 Life :: struct {
 	layers: [DEPTH][GRID][GRID]u8,
+	layer_hashes: [DEPTH]u64, // ring-aligned with layers
 	head: int,
 	history_count: int,
 	generation: u64,
 	live_count: int,
 	seed: u64,
+	rng: u64, // perturbation randomness, independent of the world seed
+	cycle_period: int, // 0 = evolving; otherwise period detected by the last step
+	injection_count: u64,
 }
 
 life_clear :: proc(life: ^Life) {
 	life^ = {}
 	life.history_count = 1
+	life.rng = DEFAULT_SEED
 }
 
 @(private)
@@ -42,6 +47,7 @@ life_random_u64 :: proc(state: ^u64) -> u64 {
 life_randomize :: proc(life: ^Life, seed: u64 = DEFAULT_SEED, fill: f32 = 0.22) {
 	life_clear(life)
 	life.seed = seed
+	life.rng = seed
 	state := seed
 	for y in 0 ..< GRID {
 		for x in 0 ..< GRID {
@@ -96,10 +102,25 @@ life_count_neighbors :: proc(layer: ^[GRID][GRID]u8, x, y: int) -> int {
 	return n
 }
 
+@(private)
+life_layer_hash :: proc(layer: ^[GRID][GRID]u8) -> u64 {
+	// FNV-1a over the raw cell bytes.
+	h := u64(0xCBF2_9CE4_8422_2325)
+	for y in 0 ..< GRID {
+		for x in 0 ..< GRID {
+			h = (h ~ u64(layer[y][x])) * 0x0000_0100_0000_01B3
+		}
+	}
+	return h
+}
+
 life_step :: proc(life: ^Life) {
 	next: [GRID][GRID]u8
 	cur := &life.layers[life.head]
 	next_live_count := 0
+
+	// Painting edits the head layer in place, so its cached hash may be stale.
+	life.layer_hashes[life.head] = life_layer_hash(cur)
 
 	for y in 0 ..< GRID {
 		for x in 0 ..< GRID {
@@ -114,12 +135,59 @@ life_step :: proc(life: ^Life) {
 		}
 	}
 
+	// Life is deterministic, so if the new state matches any stored
+	// generation the world will repeat forever with that period. Matching
+	// age a (relative to before this step) means period a + 1; scanning
+	// ages in ascending order finds the shortest period.
+	next_hash := life_layer_hash(&next)
+	life.cycle_period = 0
+	for age in 0 ..< life.history_count {
+		idx := (life.head + age) % DEPTH
+		if life.layer_hashes[idx] == next_hash && life.layers[idx] == next {
+			life.cycle_period = age + 1
+			break
+		}
+	}
+
 	// Move the head backward and overwrite only the expired oldest layer.
 	life.head = (life.head + DEPTH - 1) % DEPTH
 	life.layers[life.head] = next
+	life.layer_hashes[life.head] = next_hash
 	life.history_count = min(life.history_count + 1, DEPTH)
 	life.generation += 1
 	life.live_count = next_live_count
+}
+
+SOUP_SIZE :: 12
+SOUP_FILL :: f32(0.35)
+
+// Break a detected cycle by crashing fresh random soup into the present:
+// 2-3 small patches at random locations, OR-ed over the existing cells.
+life_inject_soup :: proc(life: ^Life) {
+	head := &life.layers[life.head]
+	patch_count := 2 + int(life_random_u64(&life.rng) & 1)
+	for _ in 0 ..< patch_count {
+		cx := int(life_random_u64(&life.rng) % GRID)
+		cy := int(life_random_u64(&life.rng) % GRID)
+		for dy in 0 ..< SOUP_SIZE {
+			for dx in 0 ..< SOUP_SIZE {
+				sample := f32(life_random_u64(&life.rng) >> 40) / f32(1 << 24)
+				if sample >= SOUP_FILL {
+					continue
+				}
+				// The world is toroidal, so patches wrap at the edges.
+				x := (cx - SOUP_SIZE / 2 + dx + GRID) % GRID
+				y := (cy - SOUP_SIZE / 2 + dy + GRID) % GRID
+				if head[y][x] == 0 {
+					head[y][x] = 1
+					life.live_count += 1
+				}
+			}
+		}
+	}
+	life.injection_count += 1
+	life.cycle_period = 0
+	// The head hash is now stale; life_step recomputes it before comparing.
 }
 
 Shadow_Step :: struct {
