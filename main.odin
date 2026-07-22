@@ -9,7 +9,7 @@ import "core:math"
 import "core:os"
 import "core:time"
 
-DEFAULT_TICK_HZ :: 16.0
+DEFAULT_TICK_HZ :: 8.0
 // Generations to wait after a soup injection before injecting again, so a
 // patch that dies instantly doesn't trigger machine-gun reseeding.
 INJECT_COOLDOWN :: 16
